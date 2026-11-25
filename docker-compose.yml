@@ -1,0 +1,15 @@
+services:
+  chancedetect:
+    build: .
+    container_name: chancedetect
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+      - CHANCE_DATA_DIR=/app/data
+      - CHANCE_ENABLE_SCHEDULER=true
+      - CHANCE_EOD_SYNC_HOUR=16
+      - CHANCE_EOD_SYNC_MINUTE=15
