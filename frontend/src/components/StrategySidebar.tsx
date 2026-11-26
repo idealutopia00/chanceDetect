@@ -9,8 +9,14 @@ import {
   Play,
   Save,
   SlidersHorizontal,
+  Sparkles,
   Trash2,
 } from 'lucide-react'
+import {
+  matchActiveTemplateId,
+  SCENARIO_TEMPLATES,
+  type ScenarioTemplate,
+} from '../config/scenarioTemplates'
 import type {
   CombineMode,
   JsonSchemaProperty,
@@ -30,6 +36,7 @@ interface StrategySidebarProps {
   loading: boolean
   onConfigChange: (next: ScanRequestConfig) => void
   onRunScan: () => void
+  onSelectTemplate: (template: ScenarioTemplate) => void
   onSavePreset: (name: string, description: string) => Promise<void>
   onDeletePreset: (id: number) => Promise<void>
   onLoadPreset: (preset: PresetRecord) => void
@@ -54,6 +61,7 @@ export function StrategySidebar({
   loading,
   onConfigChange,
   onRunScan,
+  onSelectTemplate,
   onSavePreset,
   onDeletePreset,
   onLoadPreset,
@@ -115,6 +123,7 @@ export function StrategySidebar({
   const enabledRegimeCount = regimeStrategies.filter((s) => selectionMap.get(s.id)?.enabled).length
   const enabledEntryCount = entryStrategies.filter((s) => selectionMap.get(s.id)?.enabled).length
   const regimeCombineMode: RegimeCombineMode = config.regime_combine_mode ?? 'OR'
+  const activeTemplateId = matchActiveTemplateId(config, strategies)
 
   const handleSavePreset = async () => {
     if (!presetName.trim()) return
@@ -252,6 +261,59 @@ export function StrategySidebar({
 
   return (
     <aside className="flex w-full flex-col gap-4 lg:w-[350px] lg:shrink-0">
+      {/* Quick Scenario Templates Card */}
+      <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-100">
+            <Sparkles className="h-3.5 w-3.5 text-amber-400" />
+            快速场景模板
+          </span>
+          <span className="text-[10px] text-slate-500">一键切换并扫描</span>
+        </div>
+
+        <div className="grid grid-cols-1 gap-1.5">
+          {SCENARIO_TEMPLATES.map((tpl) => {
+            const isActive = activeTemplateId === tpl.id
+            return (
+              <button
+                key={tpl.id}
+                type="button"
+                disabled={loading}
+                onClick={() => onSelectTemplate(tpl)}
+                className={`rounded-lg border px-3 py-2 text-left transition disabled:opacity-60 ${
+                  isActive
+                    ? 'border-amber-500/60 bg-amber-500/10 ring-1 ring-amber-500/30'
+                    : 'border-slate-800 bg-slate-950/60 hover:border-slate-700 hover:bg-slate-800/50'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`text-xs font-semibold ${
+                      isActive ? 'text-amber-300' : 'text-slate-100'
+                    }`}
+                  >
+                    {tpl.name}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {tpl.badge && (
+                      <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] font-medium text-amber-300">
+                        {tpl.badge}
+                      </span>
+                    )}
+                    {isActive && (
+                      <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-medium text-emerald-300">
+                        当前激活
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <p className="mt-0.5 text-[11px] leading-snug text-slate-400">{tpl.description}</p>
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
       {/* Action & Presets Card */}
       <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
         <button

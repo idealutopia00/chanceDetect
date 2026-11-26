@@ -25,8 +25,15 @@ def _seed_market(sqlite_store: SQLiteStore, bar_store: BarStore) -> None:
     sqlite_store.replace_universe(funds, mappings)
 
     n = 90
-    # Both 300 ETFs rally strongly (sh510300 has 5x liquidity of sh510330!)
-    up_closes = [3.0 + 0.002 * math.sin(i) for i in range(60)] + [3.0 + 0.04 * i for i in range(1, 31)]
+    # Both 300 ETFs have an earlier uptrend wave (for replay stats), consolidate briefly so MA5 < MA10,
+    # then trigger first-day MA bullish alignment + non-overextended volume breakout on the final bar
+    up_closes = (
+        [3.0] * 30
+        + [3.0 + 0.03 * i for i in range(1, 16)]
+        + [3.45] * 25
+        + [3.45 + 0.005 * i for i in range(1, 15)]
+        + [3.48, 3.46, 3.45, 3.47, 3.49, 3.68]
+    )
     vols_high = [200_000.0] * 89 + [500_000.0]
     df_300a = make_synthetic_bars("sh510300", up_closes, volumes=vols_high, amounts=[50_000.0] * n)
     df_300b = make_synthetic_bars("sh510330", up_closes, volumes=vols_high, amounts=[10_000.0] * n)
@@ -36,7 +43,9 @@ def _seed_market(sqlite_store: SQLiteStore, bar_store: BarStore) -> None:
     # 161725 illiquid (< 1000 万)
     df_baijiu = make_synthetic_bars("sz161725", up_closes, volumes=vols_high, amounts=[200.0] * n)
 
-    all_bars = pl.concat([df_300a, df_300b, df_cyb, df_baijiu])
+    all_bars = pl.concat([df_300a, df_300b, df_cyb, df_baijiu]).with_columns(
+        pl.col("close").pct_change().over("symbol").mul(100.0).fill_null(0.0).alias("pct_chg")
+    )
     bar_store.upsert_daily_bars(all_bars)
     daily = bar_store.load_daily_bars()
 

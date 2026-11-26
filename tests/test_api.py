@@ -45,11 +45,13 @@ def test_api_end_to_end(tmp_settings: Settings) -> None:
         r = client.get("/api/v1/strategies")
         assert r.status_code == 200
         strategies_meta = r.json()["strategies"]
-        assert len(strategies_meta) == 8
+        assert len(strategies_meta) == 10
         roles_by_id = {m["id"]: m["role"] for m in strategies_meta}
         assert roles_by_id == {
+            "mid_term_uptrend": "regime",
             "momentum_top_rank": "regime",
             "relative_strength_rs": "regime",
+            "trend_pullback_entry": "entry",
             "ma_bullish_alignment": "entry",
             "volume_high_breakout": "entry",
             "macd_golden_cross": "entry",
@@ -57,6 +59,9 @@ def test_api_end_to_end(tmp_settings: Settings) -> None:
             "boll_lower_reversal": "entry",
             "ma_negative_bias": "entry",
         }
+        for m in strategies_meta:
+            assert "properties" in m["params_schema"]
+            assert isinstance(m["default_params"], dict)
 
         # 3. Scan
         r = client.post(
@@ -207,13 +212,22 @@ def _seed_two_stage_market(sqlite_store: SQLiteStore, bar_store: BarStore) -> No
     sqlite_store.replace_universe(funds, mappings)
 
     n = 90
-    # 1. sh510300: strong rally + 2.5x volume breakout on final bar
-    c_300 = [3.0 + 0.002 * math.sin(i) for i in range(60)] + [3.0 + 0.03 * i for i in range(1, 30)] + [4.02]
+    # 1. sh510300: strong uptrend + brief 3-bar shakeout + fresh first-day MA alignment & 2.5x volume breakout (within bias20 cap, no MACD cross)
+    c_300 = (
+        [3.0 + 0.002 * math.sin(i) for i in range(60)]
+        + [3.0 + 0.02 * i for i in range(1, 27)]
+        + [3.40, 3.38, 3.41, 3.62]
+    )
     v_300 = [200_000.0] * 89 + [500_000.0]
     df_300 = make_synthetic_bars("sh510300", c_300, volumes=v_300, amounts=[50_000.0] * n)
 
-    # 2. sh512480: strong rally + steady 1.05x volume (MA alignment hits, vol breakout misses)
-    c_semi = [2.0 + 0.002 * math.sin(i) for i in range(60)] + [2.0 + 0.025 * i for i in range(1, 31)]
+    # 2. sh512480: strong uptrend + brief 3-bar shakeout + fresh first-day MA alignment on steady 1.05x volume
+    #    (DIF stays above DEA so macd_golden_cross does not fire; normal volume so vol breakout misses)
+    c_semi = (
+        [2.0 + 0.002 * math.sin(i) for i in range(60)]
+        + [2.0 + 0.015 * i for i in range(1, 27)]
+        + [2.30, 2.28, 2.31, 2.46]
+    )
     v_semi = [150_000.0] * 89 + [160_000.0]
     df_semi = make_synthetic_bars("sh512480", c_semi, volumes=v_semi, amounts=[30_000.0] * n)
 
@@ -494,3 +508,186 @@ def test_legacy_v1_preset_loads_and_scans_without_regime_combine_mode(
             "sh512480",
             "sh512800",
         }
+
+
+def test_v11_strategy_suite_and_scenario_templates_end_to_end(tmp_settings: Settings) -> None:
+    """End-to-end HTTP test verifying mid_term_uptrend, trend_pullback_entry,
+    first-day ma_bullish_alignment, anti-chase volume_high_breakout, and all 3 scenario templates.
+    """
+    app = create_app(tmp_settings)
+    sqlite_store: SQLiteStore = app.state.sqlite_store
+    bar_store: BarStore = app.state.bar_store
+
+    funds = [
+        ExchangeFund(
+            symbol="sh510300",
+            code="510300",
+            exchange="sh",
+            name="沪深300ETF",
+            fund_type="ETF",
+            index_code="000300",
+            index_name="沪深300指数",
+            company_name="华泰柏瑞基金",
+        ),
+        ExchangeFund(
+            symbol="sh512480",
+            code="512480",
+            exchange="sh",
+            name="半导体ETF",
+            fund_type="ETF",
+            index_code="H30184",
+            index_name="中证全指半导体",
+            company_name="国联安基金",
+        ),
+        ExchangeFund(
+            symbol="sz159915",
+            code="159915",
+            exchange="sz",
+            name="创业板ETF",
+            fund_type="ETF",
+            index_code="399006",
+            index_name="创业板指",
+            company_name="易方达基金",
+        ),
+    ]
+    mappings = [
+        OTCFundMapping(
+            exchange_symbol="sh510300",
+            otc_code="006131",
+            otc_name="沪深300联接C",
+            share_class="C",
+            mapping_type="FEEDER",
+            purchase_status="开放申购",
+        ),
+        OTCFundMapping(
+            exchange_symbol="sh512480",
+            otc_code="007301",
+            otc_name="半导体联接C",
+            share_class="C",
+            mapping_type="FEEDER",
+            purchase_status="开放申购",
+        ),
+        OTCFundMapping(
+            exchange_symbol="sz159915",
+            otc_code="004744",
+            otc_name="创业板联接C",
+            share_class="C",
+            mapping_type="FEEDER",
+            purchase_status="开放申购",
+        ),
+    ]
+    sqlite_store.replace_universe(funds, mappings)
+
+    n = 90
+    # 1. sh510300: established mid-term uptrend that pulls back to MA10/MA20 and stabilizes on final bar
+    c_pullback = [1.0 + 0.01 * i for i in range(87)] + [1.84, 1.81, 1.835]
+    df_pullback = make_synthetic_bars(
+        "sh510300", c_pullback, volumes=[150_000.0] * 89 + [135_000.0], amounts=[50_000.0] * n
+    )
+    pb_opens = df_pullback["open"].to_list()
+    pb_opens[-1] = 1.815
+    df_pullback = df_pullback.with_columns(pl.Series("open", pb_opens))
+
+    # 2. sh512480: extended vertical rally (passes mid_term_uptrend, bias20 > 10% suppresses breakout,
+    #    MA alignment formed weeks ago so first-day alignment is silent, stretched so no pullback) -> watchlist only
+    c_extended = [1.0 + 0.005 * i for i in range(70)] + [1.35 + 0.045 * i for i in range(1, 21)]
+    df_extended = make_synthetic_bars(
+        "sh512480", c_extended, volumes=[150_000.0] * 89 + [400_000.0], amounts=[40_000.0] * n
+    )
+
+    # 3. sz159915: downtrending oversold rebound (fails mid_term_uptrend, hits rsi_oversold_rebound)
+    c_oversold = [4.0] * 77 + [4.0 - 0.10 * i for i in range(1, 13)] + [2.88]
+    df_oversold = make_synthetic_bars("sz159915", c_oversold, amounts=[30_000.0] * n)
+    os_opens = df_oversold["open"].to_list()
+    os_opens[-1] = 2.80
+    df_oversold = df_oversold.with_columns(pl.Series("open", os_opens))
+
+    all_bars = pl.concat([df_pullback, df_extended, df_oversold]).with_columns(
+        pl.col("close").pct_change().over("symbol").mul(100.0).fill_null(0.0).alias("pct_chg")
+    )
+    bar_store.upsert_daily_bars(all_bars)
+    daily = bar_store.load_daily_bars()
+
+    dates = df_pullback["trade_date"].to_list()
+    bench = pl.DataFrame(
+        {
+            "benchmark_code": ["sh000300"] * n,
+            "trade_date": dates,
+            "open": [3900.0] * n,
+            "high": [3910.0] * n,
+            "low": [3890.0] * n,
+            "close": [3900.0] * n,
+            "volume": [1e7] * n,
+            "amount": [1e7] * n,
+            "pct_chg": [0.0] * n,
+        }
+    )
+    bar_store.upsert_benchmarks(bench)
+    feat = compute_base_features(daily, bar_store.load_benchmarks())
+    bar_store.save_features(feat)
+    sqlite_store.update_fund_bar_metrics(bar_store.compute_symbol_metrics())
+
+    with TestClient(app) as client:
+        # Template 1: 右侧主线买点 (default)
+        r1 = client.post(
+            "/api/v1/scan",
+            json={
+                "strategies": [
+                    {"strategy_id": "mid_term_uptrend", "enabled": True},
+                    {"strategy_id": "relative_strength_rs", "enabled": True},
+                    {"strategy_id": "trend_pullback_entry", "enabled": True},
+                    {"strategy_id": "ma_bullish_alignment", "enabled": True},
+                    {"strategy_id": "volume_high_breakout", "enabled": True},
+                    {"strategy_id": "macd_golden_cross", "enabled": True},
+                ],
+                "regime_combine_mode": "OR",
+                "combine_mode": "OR",
+            },
+        )
+        assert r1.status_code == 200
+        d1 = r1.json()
+        assert [g["representative"]["symbol"] for g in d1["actionable_groups"]] == ["sh510300"]
+        assert [g["representative"]["symbol"] for g in d1["watchlist_groups"]] == ["sh512480"]
+        act_rep = d1["actionable_groups"][0]["representative"]
+        assert "mid_term_uptrend" in [s["strategy_id"] for s in act_rep["matched_regimes"]]
+        assert "trend_pullback_entry" in [s["strategy_id"] for s in act_rep["hit_strategies"]]
+
+        # Template 2: 左侧超跌抄底 (no regime filter)
+        r2 = client.post(
+            "/api/v1/scan",
+            json={
+                "strategies": [
+                    {"strategy_id": "rsi_oversold_rebound", "enabled": True},
+                    {"strategy_id": "boll_lower_reversal", "enabled": True},
+                    {"strategy_id": "ma_negative_bias", "enabled": True},
+                ],
+                "combine_mode": "OR",
+            },
+        )
+        assert r2.status_code == 200
+        d2 = r2.json()
+        assert [g["representative"]["symbol"] for g in d2["actionable_groups"]] == ["sz159915"]
+        assert d2["watchlist_groups"] == []
+
+        # Template 3: 强势动量聚焦 (momentum_top_rank AND relative_strength_rs + pullback OR breakout)
+        r3 = client.post(
+            "/api/v1/scan",
+            json={
+                "strategies": [
+                    {"strategy_id": "momentum_top_rank", "enabled": True, "params": {"top_k": 2}},
+                    {"strategy_id": "relative_strength_rs", "enabled": True},
+                    {"strategy_id": "trend_pullback_entry", "enabled": True},
+                    {
+                        "strategy_id": "volume_high_breakout",
+                        "enabled": True,
+                        "params": {"max_bias20_pct": 0.0},
+                    },
+                ],
+                "regime_combine_mode": "AND",
+                "combine_mode": "OR",
+            },
+        )
+        assert r3.status_code == 200
+        d3 = r3.json()
+        # With max_bias20_pct disabled, sh512480's high-momentum + RS + volume breakout surfaces!
+        assert "sh512480" in [g["representative"]["symbol"] for g in d3["actionable_groups"]]

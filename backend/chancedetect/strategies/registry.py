@@ -17,6 +17,8 @@ from chancedetect.strategies.momentum import (
 from chancedetect.strategies.trend import (
     MaBullishAlignmentStrategy,
     MacdGoldenCrossStrategy,
+    MidTermUptrendStrategy,
+    TrendPullbackEntryStrategy,
     VolumeHighBreakoutStrategy,
 )
 
@@ -43,14 +45,16 @@ class StrategyRegistry:
 def create_default_registry() -> StrategyRegistry:
     registry = StrategyRegistry()
     for strategy in (
+        MidTermUptrendStrategy(),
+        MomentumTopRankStrategy(),
+        RelativeStrengthRsStrategy(),
+        TrendPullbackEntryStrategy(),
         MaBullishAlignmentStrategy(),
         VolumeHighBreakoutStrategy(),
         MacdGoldenCrossStrategy(),
         RsiOversoldReboundStrategy(),
         BollLowerReversalStrategy(),
         MaNegativeBiasStrategy(),
-        MomentumTopRankStrategy(),
-        RelativeStrengthRsStrategy(),
     ):
         registry.register(strategy)
     return registry
