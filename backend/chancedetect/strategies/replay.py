@@ -9,14 +9,17 @@ import polars as pl
 
 from chancedetect.strategies.engine import ScanRequestConfig, StrategyEngine, sort_otc_mappings
 
+DEFAULT_HOLDING_HORIZONS: tuple[int, ...] = (5, 10, 20, 40)
+ENTRY_BASIS = "T+1_close"
+
 
 def _compute_forward_stats(
     closes: list[float],
     lows: list[float],
     trigger_indices: list[int],
-    horizons: tuple[int, ...] = (1, 5, 10, 20),
+    horizons: tuple[int, ...] = DEFAULT_HOLDING_HORIZONS,
 ) -> list[dict[str, Any]]:
-    """Compute win rate, avg/median return, max gain/loss, and avg max drawdown after each trigger."""
+    """Compute forward return and drawdown stats anchored at Execution Date (T+1) close (ADR-0002)."""
     n = len(closes)
     stats_out: list[dict[str, Any]] = []
 
@@ -24,16 +27,20 @@ def _compute_forward_stats(
         rets: list[float] = []
         mdds: list[float] = []
         for idx in trigger_indices:
-            entry = closes[idx]
-            target_idx = idx + h
-            if entry <= 0 or target_idx >= n:
+            # ADR-0002: OTC subscriptions placed before 15:00 on T+1 settle at T+1 close (idx + 1).
+            entry_idx = idx + 1
+            target_idx = entry_idx + h
+            if entry_idx >= n or target_idx >= n:
+                continue
+            entry = closes[entry_idx]
+            if entry <= 0:
                 continue
             exit_p = closes[target_idx]
             ret_pct = (exit_p / entry - 1.0) * 100.0
             rets.append(ret_pct)
 
-            # Max drawdown during holding window (idx+1 .. target_idx)
-            window_low = min(lows[idx + 1 : target_idx + 1])
+            # Max drawdown during holding window starting after T+1: [idx + 2 .. idx + 1 + h]
+            window_low = min(lows[entry_idx + 1 : target_idx + 1])
             dd_pct = min(0.0, (window_low / entry - 1.0) * 100.0)
             mdds.append(dd_pct)
 
@@ -93,6 +100,9 @@ def build_fund_replay(
     if sym_panel.is_empty():
         raise ValueError(f"No daily bar history found for {symbol}")
 
+    has_entries = any(engine.registry.get(sid).role == "entry" for sid in enabled_ids)
+    signal_col = "actionable_signal" if has_entries else "regime_pass"
+
     if enabled_ids:
         combined_full = engine.combine_signals(
             panel,
@@ -105,6 +115,8 @@ def build_fund_replay(
         sym_signals = combined_full.filter(pl.col("symbol") == symbol).sort("trade_date")
     else:
         sym_signals = sym_panel.with_columns(
+            pl.lit(False).alias("actionable_signal"),
+            pl.lit(False).alias("regime_pass"),
             pl.lit(False).alias("combined_signal"),
             pl.lit(0).alias("hit_count"),
             pl.lit(0.0).alias("composite_score"),
@@ -149,10 +161,10 @@ def build_fund_replay(
             }
         )
 
-    # Extract triggers
+    # Extract triggers matching the active two-stage funnel (actionable_signal or regime_pass)
     triggers: list[dict[str, Any]] = []
     trigger_indices: list[int] = []
-    for row in sym_signals.filter(pl.col("combined_signal")).iter_rows(named=True):
+    for row in sym_signals.filter(pl.col(signal_col)).iter_rows(named=True):
         dt_str = row["trade_date"].isoformat()
         idx = date_to_idx.get(dt_str)
         if idx is None:
@@ -196,6 +208,7 @@ def build_fund_replay(
     return {
         "fund": fund.model_dump(),
         "lookback_days": len(bars_out),
+        "entry_basis": ENTRY_BASIS,
         "trigger_count": len(triggers),
         "bars": bars_out,
         "triggers": triggers,

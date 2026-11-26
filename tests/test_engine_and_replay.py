@@ -122,9 +122,11 @@ def test_fund_replay_and_forward_stats(sqlite_store: SQLiteStore, bar_store: Bar
     )
     replay = build_fund_replay(engine, "sh510300", cfg, lookback_days=200)
     assert replay["fund"]["symbol"] == "sh510300"
+    assert replay["entry_basis"] == "T+1_close"
     assert len(replay["bars"]) == 90
     assert replay["trigger_count"] > 0
-    # Forward stats covers 1, 5, 10, 20 days and shows positive win rate on uptrend
+    # Forward stats covers 5, 10, 20, 40 trading days after T+1 close and shows positive win rate on uptrend
+    assert [s["horizon_days"] for s in replay["forward_stats"]] == [5, 10, 20, 40]
     stat_5d = next(s for s in replay["forward_stats"] if s["horizon_days"] == 5)
     assert stat_5d["sample_count"] > 0
     assert stat_5d["win_rate_pct"] == 100.0
