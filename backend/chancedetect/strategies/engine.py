@@ -13,7 +13,11 @@ from pydantic import BaseModel, Field
 from chancedetect.data.models import ExchangeFund, OTCFundMapping
 from chancedetect.storage.bar_store import BarStore
 from chancedetect.storage.sqlite_store import SQLiteStore
-from chancedetect.strategies.indicators import compute_base_features
+from chancedetect.strategies.indicators import (
+    compute_base_features,
+    ensure_extension_features,
+    trend_stage_expr,
+)
 from chancedetect.strategies.registry import StrategyRegistry, create_default_registry
 
 
@@ -34,6 +38,8 @@ class ScanRequestConfig(BaseModel):
     regime_combine_mode: Literal["AND", "OR"] = "OR"
     combine_mode: Literal["AND", "OR", "RESONANCE"] = "OR"
     min_hits: int = Field(default=2, ge=1)
+    hide_overheated: bool = False
+    freshness_cooldown_days: int = Field(default=10, ge=1, le=120)
     base_filter: BaseUniverseFilter = Field(default_factory=BaseUniverseFilter)
     share_class_preference: Literal["C", "A"] = "C"
     target_date: date | None = None
@@ -106,7 +112,7 @@ class StrategyEngine:
         feat_sig = _file_signature(self.bars.features_path)
         if feat_sig is not None:
             if self._panel_cache is None or feat_sig != self._panel_sig:
-                self._panel_cache = self.bars.load_features()
+                self._panel_cache = ensure_extension_features(self.bars.load_features())
                 self._panel_sig = feat_sig
         else:
             bars_sig = _file_signature(self.bars.daily_bars_path)
@@ -204,12 +210,33 @@ class StrategyEngine:
         combine_mode: Literal["AND", "OR", "RESONANCE"],
         min_hits: int,
         regime_combine_mode: Literal["AND", "OR"] = "OR",
+        freshness_cooldown_days: int = 10,
     ) -> pl.DataFrame:
         """Combine per-strategy outputs through a two-stage funnel (Trend Regime -> Entry Trigger)."""
         if panel.is_empty() or not enabled_ids:
             return panel.head(0)
 
-        base = panel.select(["symbol", "trade_date", "close", "pct_chg", "amount", "avg_amount_20d", "vol_ratio", "rsi14"])
+        panel = ensure_extension_features(panel)
+        base = panel.select(
+            [
+                "symbol",
+                "trade_date",
+                "close",
+                "pct_chg",
+                "amount",
+                "avg_amount_20d",
+                "vol_ratio",
+                "rsi14",
+                "ma20",
+                "ma60",
+                "bias20",
+                "bias60",
+                "boll_pct_b",
+                "bias20_z",
+                "drawup_60d_low",
+                "pos_60d",
+            ]
+        ).with_columns(trend_stage_expr().alias("trend_stage"))
         regime_sig_cols: list[str] = []
         regime_score_cols: list[str] = []
         entry_sig_cols: list[str] = []
@@ -311,6 +338,24 @@ class StrategyEngine:
             entry_pass_expr = pl.lit(False)
             entry_score_expr = pl.lit(0.0)
 
+        cooldown = max(1, freshness_cooldown_days)
+        act_int = pl.col("actionable_signal").cast(pl.Int32)
+        prior_hits_expr = (
+            act_int.shift(1, fill_value=0)
+            .rolling_sum(window_size=cooldown, min_samples=1)
+            .over("symbol")
+        )
+        hits_20d_expr = act_int.rolling_sum(window_size=20, min_samples=1).over("symbol")
+
+        stage_adj_expr = (
+            pl.when(pl.col("trend_stage") == "early")
+            .then(5.0)
+            .when(pl.col("trend_stage") == "overheated")
+            .then(-15.0)
+            .otherwise(0.0)
+        )
+        fresh_adj_expr = pl.when(pl.col("is_fresh")).then(8.0).otherwise(0.0)
+
         combined = base.with_columns(
             regime_hit_count_expr.alias("regime_hit_count"),
             regime_score_expr.alias("regime_score"),
@@ -326,9 +371,20 @@ class StrategyEngine:
                 else pl.lit(False)
             ).alias("watchlist_signal"),
         ).with_columns(
+            (pl.col("actionable_signal") & (prior_hits_expr == 0)).alias("is_fresh"),
+            hits_20d_expr.alias("hits_20d"),
+        ).with_columns(
             (
                 pl.when(pl.col("actionable_signal"))
-                .then((pl.col("entry_score") + pl.col("regime_hit_count") * 5.0).round(2))
+                .then(
+                    pl.max_horizontal(
+                        pl.lit(0.0),
+                        pl.col("entry_score")
+                        + pl.col("regime_hit_count") * 5.0
+                        + stage_adj_expr
+                        + fresh_adj_expr,
+                    ).round(2)
+                )
                 .otherwise(0.0)
             ).alias("actionable_score"),
         ).with_columns(
@@ -409,6 +465,23 @@ class StrategyEngine:
                     "avg_amount_20d": round(float(row["avg_amount_20d"] or 0.0), 2),
                     "vol_ratio": round(float(row["vol_ratio"] or 0.0), 2),
                     "rsi14": round(float(row["rsi14"]), 1) if row["rsi14"] is not None else None,
+                    "trend_stage": str(row.get("trend_stage") or "mid"),
+                    "is_fresh": bool(row.get("is_fresh", False)),
+                    "hits_20d": int(row.get("hits_20d") or 0),
+                    "bias20": round(float(row["bias20"]), 2) if row.get("bias20") is not None else None,
+                    "bias60": round(float(row["bias60"]), 2) if row.get("bias60") is not None else None,
+                    "bias20_z": round(float(row["bias20_z"]), 2) if row.get("bias20_z") is not None else None,
+                    "drawup_60d_low": (
+                        round(float(row["drawup_60d_low"]), 2)
+                        if row.get("drawup_60d_low") is not None
+                        else None
+                    ),
+                    "boll_pct_b": (
+                        round(float(row["boll_pct_b"]), 3)
+                        if row.get("boll_pct_b") is not None
+                        else None
+                    ),
+                    "pos_60d": round(float(row["pos_60d"]), 2) if row.get("pos_60d") is not None else None,
                     "hit_count": int(row[hit_col]),
                     "composite_score": round(float(row[score_col]), 2),
                     "matched_regimes": matched_regimes,
@@ -492,6 +565,7 @@ class StrategyEngine:
                 "watchlist_index_count": 0,
                 "regime_combine_mode": config.regime_combine_mode,
                 "combine_mode": config.combine_mode,
+                "hide_overheated": config.hide_overheated,
                 "share_class_preference": config.share_class_preference,
                 "groups": [],
                 "actionable_groups": [],
@@ -506,10 +580,13 @@ class StrategyEngine:
             config.combine_mode,
             config.min_hits,
             regime_combine_mode=config.regime_combine_mode,
+            freshness_cooldown_days=config.freshness_cooldown_days,
         )
 
         day_slice = combined.filter(pl.col("trade_date") == effective_date)
         day_actionable = day_slice.filter(pl.col("actionable_signal"))
+        if config.hide_overheated:
+            day_actionable = day_actionable.filter(pl.col("trend_stage") != "overheated")
         day_watchlist = day_slice.filter(pl.col("watchlist_signal"))
 
         fund_by_sym: dict[str, ExchangeFund] = {
@@ -554,6 +631,7 @@ class StrategyEngine:
             "watchlist_index_count": len(watchlist_groups),
             "regime_combine_mode": config.regime_combine_mode,
             "combine_mode": config.combine_mode,
+            "hide_overheated": config.hide_overheated,
             "share_class_preference": config.share_class_preference,
             "groups": actionable_groups,
             "actionable_groups": actionable_groups,

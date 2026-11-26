@@ -118,9 +118,10 @@ export function StrategySidebar({
 
   const handleSavePreset = async () => {
     if (!presetName.trim()) return
+    const antiChaseTag = config.hide_overheated ? ' · 过滤高位偏热' : ''
     await onSavePreset(
       presetName.trim(),
-      `${enabledRegimeCount}主线(${regimeCombineMode}) + ${enabledEntryCount}买点(${config.combine_mode})`,
+      `${enabledRegimeCount}主线(${regimeCombineMode}) + ${enabledEntryCount}买点(${config.combine_mode})${antiChaseTag}`,
     )
     setPresetName('')
     setSavingPreset(false)
@@ -475,6 +476,28 @@ export function StrategySidebar({
             </div>
           )}
         </div>
+
+        {/* One-Click Anti-Chase Toggle */}
+        <label
+          className={`flex cursor-pointer items-center justify-between gap-2 rounded-lg border px-2.5 py-2 transition ${
+            config.hide_overheated
+              ? 'border-rose-500/45 bg-rose-500/10'
+              : 'border-slate-800 bg-slate-950/60 hover:border-slate-700'
+          }`}
+        >
+          <div>
+            <div className="text-xs font-medium text-slate-100">过滤高位偏热</div>
+            <div className="text-[10px] text-slate-400">
+              从今日可买中隐藏「高位偏热」标的，主线观察池不受影响
+            </div>
+          </div>
+          <input
+            type="checkbox"
+            checked={Boolean(config.hide_overheated)}
+            onChange={(e) => onConfigChange({ ...config, hide_overheated: e.target.checked })}
+            className="h-4 w-4 shrink-0 rounded accent-rose-500"
+          />
+        </label>
 
         {(['trend', 'mean_reversion', 'momentum'] as StrategyCategory[]).map((cat) => {
           const catStrats = entryStrategies.filter((s) => s.category === cat)

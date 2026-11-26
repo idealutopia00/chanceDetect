@@ -112,21 +112,64 @@ def status() -> None:
         console.print(table)
 
 
+@app.command("recompute-features")
+def recompute_features() -> None:
+    """Recompute the local vectorized technical indicator & Trend Stage feature cache."""
+    _, _, sync_svc, _ = _init_services()
+    console.print("[cyan]Recomputing precomputed feature cache...[/cyan]")
+    rows = sync_svc.recompute_features()
+    console.print(f"[green]Feature cache recomputed:[/green] {rows} rows")
+
+
+def _format_stage_cell(stage: str) -> str:
+    styles = {
+        "oversold": "cyan",
+        "early": "green",
+        "mid": "yellow",
+        "overheated": "red",
+    }
+    color = styles.get(stage, "white")
+    return f"[{color}]{stage}[/{color}]"
+
+
+def _format_fresh_cell(is_fresh: bool, hits_20d: int) -> str:
+    if is_fresh:
+        return f"[bold green]FRESH[/bold green] ({hits_20d}/20d)"
+    if hits_20d > 0:
+        return f"{hits_20d}/20d"
+    return "-"
+
+
 @app.command("scan")
 def scan(
+    regime_combine: Annotated[
+        Literal["AND", "OR"], typer.Option("--regime-combine", help="Trend Regime combine mode (OR/AND)")
+    ] = "OR",
     combine: Annotated[Literal["AND", "OR", "RESONANCE"], typer.Option("--combine")] = "OR",
     min_hits: Annotated[int, typer.Option("--min-hits")] = 2,
     min_amount: Annotated[float, typer.Option("--min-amount", help="Min 20d avg amount (万元)")] = 1000.0,
     share: Annotated[Literal["C", "A"], typer.Option("--share", help="Preferred OTC share class")] = "C",
+    hide_overheated: Annotated[
+        bool, typer.Option("--hide-overheated", help="Hide overheated items from Actionable Opportunities")
+    ] = False,
+    cooldown: Annotated[
+        int, typer.Option("--cooldown", help="Fresh Signal cooldown window in trading days")
+    ] = 10,
+    show_watchlist: Annotated[
+        bool, typer.Option("--show-watchlist/--no-watchlist", help="Print Mainline Watchlist table")
+    ] = True,
     strategy: Annotated[list[str] | None, typer.Option("--strategy", "-s", help="Strategy IDs (repeatable)")] = None,
 ) -> None:
-    """Run vectorized strategy scan from the CLI and print index-grouped opportunities."""
+    """Run vectorized two-stage strategy scan from the CLI and print Actionable & Watchlist groups."""
     _, _, _, engine = _init_services()
     selections = [StrategySelection(strategy_id=sid, enabled=True) for sid in (strategy or [])]
     cfg = ScanRequestConfig(
         strategies=selections,
+        regime_combine_mode=regime_combine,
         combine_mode=combine,
         min_hits=min_hits,
+        hide_overheated=hide_overheated,
+        freshness_cooldown_days=cooldown,
         base_filter=BaseUniverseFilter(min_avg_amount_20d=min_amount),
         share_class_preference=share,
     )
@@ -134,33 +177,69 @@ def scan(
     console.print(
         f"[bold cyan]Scan date:[/bold cyan] {res['trade_date']}  "
         f"[bold green]Elapsed:[/bold green] {res['elapsed_ms']} ms  "
-        f"[bold]Hits:[/bold] {res['hit_index_count']} indices / {res['hit_fund_count']} funds "
+        f"[bold]Actionable:[/bold] {res['actionable_index_count']} indices / {res['actionable_fund_count']} funds  "
+        f"[bold magenta]Watchlist:[/bold magenta] {res['watchlist_index_count']} indices / {res['watchlist_fund_count']} funds "
         f"(scanned {res['scanned_fund_count']})"
     )
 
-    table = Table(title="Top Opportunity Groups (with Preferred OTC Counterparts)")
-    table.add_column("Index / Theme")
-    table.add_column("Rep ETF")
-    table.add_column("Chg%")
-    table.add_column("Score")
-    table.add_column("Strategies")
-    table.add_column(f"Top OTC ({share} pref)")
+    actionable_table = Table(title="Actionable Opportunities (with Preferred OTC Counterparts)")
+    actionable_table.add_column("Index / Theme")
+    actionable_table.add_column("Rep ETF")
+    actionable_table.add_column("Chg%", no_wrap=True)
+    actionable_table.add_column("Stage", no_wrap=True)
+    actionable_table.add_column("Fresh", no_wrap=True)
+    actionable_table.add_column("Score", no_wrap=True)
+    actionable_table.add_column("Strategies")
+    actionable_table.add_column(f"Top OTC ({share} pref)", no_wrap=True)
 
-    for grp in res["groups"][:25]:
+    for grp in res["actionable_groups"][:25]:
         rep = grp["representative"]
         strats = ", ".join(s["strategy_name"] for s in rep["hit_strategies"])
         otcs = ", ".join(
             f"{o['otc_code']}({o['share_class']})" for o in grp["otc_funds"][:3]
         )
-        table.add_row(
+        actionable_table.add_row(
             grp["index_name"][:18],
             f"{rep['code']} {rep['name'][:12]}",
             f"{rep['pct_chg']:+.2f}%",
+            _format_stage_cell(rep.get("trend_stage", "mid")),
+            _format_fresh_cell(bool(rep.get("is_fresh", False)), int(rep.get("hits_20d", 0))),
             f"{grp['max_composite_score']:.1f}",
-            strats[:32],
+            strats[:28],
             otcs,
         )
-    console.print(table)
+    console.print(actionable_table)
+
+    if show_watchlist and res["watchlist_groups"]:
+        watch_table = Table(title="Mainline Watchlist (Awaiting Pullback / Entry)")
+        watch_table.add_column("Index / Theme")
+        watch_table.add_column("Rep ETF")
+        watch_table.add_column("Chg%", no_wrap=True)
+        watch_table.add_column("Stage", no_wrap=True)
+        watch_table.add_column("Bias20", no_wrap=True)
+        watch_table.add_column("Score", no_wrap=True)
+        watch_table.add_column("Matched Regimes")
+        watch_table.add_column(f"Top OTC ({share} pref)", no_wrap=True)
+
+        for grp in res["watchlist_groups"][:25]:
+            rep = grp["representative"]
+            regimes = ", ".join(s["strategy_name"] for s in rep.get("matched_regimes", []))
+            bias20 = rep.get("bias20")
+            bias20_str = f"{bias20:+.2f}%" if bias20 is not None else "-"
+            otcs = ", ".join(
+                f"{o['otc_code']}({o['share_class']})" for o in grp["otc_funds"][:3]
+            )
+            watch_table.add_row(
+                grp["index_name"][:18],
+                f"{rep['code']} {rep['name'][:12]}",
+                f"{rep['pct_chg']:+.2f}%",
+                _format_stage_cell(rep.get("trend_stage", "mid")),
+                bias20_str,
+                f"{grp['max_composite_score']:.1f}",
+                regimes[:28],
+                otcs,
+            )
+        console.print(watch_table)
 
 
 @app.command("serve")

@@ -30,6 +30,8 @@ function buildDefaultConfig(strategies: StrategyMeta[]): ScanRequestConfig {
     regime_combine_mode: 'OR',
     combine_mode: 'OR',
     min_hits: 2,
+    hide_overheated: false,
+    freshness_cooldown_days: 10,
     base_filter: {
       min_avg_amount_20d: 1000,
       min_listing_days: 60,
@@ -73,6 +75,8 @@ function normalizePresetConfig(
     regime_combine_mode: raw.regime_combine_mode ?? 'OR',
     combine_mode: raw.combine_mode ?? 'OR',
     min_hits: raw.min_hits ?? defaults.min_hits,
+    hide_overheated: raw.hide_overheated ?? false,
+    freshness_cooldown_days: raw.freshness_cooldown_days ?? defaults.freshness_cooldown_days,
     base_filter: {
       ...defaults.base_filter,
       ...(raw.base_filter ?? {}),

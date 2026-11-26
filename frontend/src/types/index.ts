@@ -1,5 +1,6 @@
 export type StrategyCategory = 'trend' | 'mean_reversion' | 'momentum'
 export type StrategyRole = 'regime' | 'entry'
+export type TrendStage = 'oversold' | 'early' | 'mid' | 'overheated'
 export type RegimeCombineMode = 'AND' | 'OR'
 export type CombineMode = 'AND' | 'OR' | 'RESONANCE'
 export type SharePreference = 'C' | 'A'
@@ -42,6 +43,8 @@ export interface ScanRequestConfig {
   regime_combine_mode: RegimeCombineMode
   combine_mode: CombineMode
   min_hits: number
+  hide_overheated: boolean
+  freshness_cooldown_days?: number
   base_filter: BaseUniverseFilter
   share_class_preference: SharePreference
   target_date?: string | null
@@ -82,6 +85,15 @@ export interface HitFundItem {
   avg_amount_20d: number
   vol_ratio: number
   rsi14: number | null
+  trend_stage?: TrendStage
+  is_fresh?: boolean
+  hits_20d?: number
+  bias20?: number | null
+  bias60?: number | null
+  bias20_z?: number | null
+  drawup_60d_low?: number | null
+  boll_pct_b?: number | null
+  pos_60d?: number | null
   hit_count: number
   composite_score: number
   matched_regimes?: HitStrategyInfo[]
@@ -114,6 +126,7 @@ export interface ScanResponse {
   watchlist_index_count: number
   regime_combine_mode: RegimeCombineMode
   combine_mode: CombineMode
+  hide_overheated?: boolean
   share_class_preference: SharePreference
   groups: OpportunityGroup[]
   actionable_groups: OpportunityGroup[]

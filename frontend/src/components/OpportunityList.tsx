@@ -10,7 +10,7 @@ import {
   Sparkles,
   Zap,
 } from 'lucide-react'
-import type { OTCMapping, OpportunityGroup, ScanResponse } from '../types'
+import type { OTCMapping, OpportunityGroup, ScanResponse, TrendStage } from '../types'
 
 interface OpportunityListProps {
   result: ScanResponse | null
@@ -19,9 +19,34 @@ interface OpportunityListProps {
   onSelectFund: (symbol: string) => void
 }
 
+const TREND_STAGE_META: Record<TrendStage, { label: string; badgeClass: string }> = {
+  oversold: {
+    label: '超跌低位',
+    badgeClass: 'border-cyan-500/40 bg-cyan-500/15 text-cyan-300',
+  },
+  early: {
+    label: '启动初期',
+    badgeClass: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-300',
+  },
+  mid: {
+    label: '趋势中段',
+    badgeClass: 'border-sky-500/35 bg-sky-500/10 text-sky-300',
+  },
+  overheated: {
+    label: '高位偏热',
+    badgeClass: 'border-rose-500/45 bg-rose-500/15 text-rose-300',
+  },
+}
+
 function formatPct(val: number): string {
   const sign = val > 0 ? '+' : ''
   return `${sign}${val.toFixed(2)}%`
+}
+
+function formatMetricPct(val: number | null | undefined, digits = 1): string {
+  if (val === null || val === undefined) return '-'
+  const sign = val > 0 ? '+' : ''
+  return `${sign}${val.toFixed(digits)}%`
 }
 
 function pctClass(val: number): string {
@@ -119,10 +144,17 @@ export function OpportunityList({
             <span className="ml-1.5 text-slate-500">(过滤池 {result.scanned_fund_count} 只)</span>
           </span>
         </div>
-        <div className="text-[11px] text-slate-400">
-          场外偏好：
-          <span className="ml-1 font-semibold text-emerald-300">
-            {result.share_class_preference} 类份额优先
+        <div className="flex items-center gap-2 text-[11px] text-slate-400">
+          {result.hide_overheated && (
+            <span className="rounded border border-rose-500/35 bg-rose-500/10 px-1.5 py-0.5 text-[10px] font-medium text-rose-300">
+              已过滤高位偏热
+            </span>
+          )}
+          <span>
+            场外偏好：
+            <span className="ml-1 font-semibold text-emerald-300">
+              {result.share_class_preference} 类份额优先
+            </span>
           </span>
         </div>
       </div>
@@ -223,6 +255,9 @@ export function OpportunityList({
             const isExpanded = expandedGroup === grp.group_key
             const previewOtcs = grp.otc_funds.slice(0, 4)
             const matchedRegimes = rep.matched_regimes ?? []
+            const stageKey: TrendStage = rep.trend_stage ?? 'mid'
+            const stageMeta = TREND_STAGE_META[stageKey]
+            const hits20d = rep.hits_20d ?? 0
 
             return (
               <div
@@ -230,7 +265,7 @@ export function OpportunityList({
                 className="overflow-hidden rounded-xl border border-slate-800/90 bg-slate-900/75 transition hover:border-slate-700"
               >
                 <div className="p-4">
-                  {/* Top Row: Index + Representative ETF + Score + Replay Button */}
+                  {/* Top Row: Index + Representative ETF + Stage/Fresh Badges + Score + Replay Button */}
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
@@ -243,6 +278,28 @@ export function OpportunityList({
                         <span className="rounded border border-slate-700 bg-slate-800/80 px-1.5 py-0.5 text-[10px] text-slate-300">
                           {rep.fund_type}
                         </span>
+                        <span
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${stageMeta.badgeClass}`}
+                        >
+                          {stageMeta.label}
+                        </span>
+                        {!isWatchlist && rep.is_fresh && (
+                          <span className="inline-flex items-center gap-1 rounded border border-teal-400/50 bg-teal-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-teal-200">
+                            <Sparkles className="h-2.5 w-2.5" />
+                            新信号
+                          </span>
+                        )}
+                        {hits20d > 0 && (
+                          <span
+                            className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${
+                              !isWatchlist && hits20d === 1
+                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                                : 'border-slate-700 bg-slate-800/70 text-slate-300'
+                            }`}
+                          >
+                            {isWatchlist ? `近20日触发${hits20d}次` : `近20日第${hits20d}次`}
+                          </span>
+                        )}
                         {grp.member_count > 1 && (
                           <span className="rounded border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-300">
                             同指数 {grp.member_count} 只命中
@@ -280,11 +337,74 @@ export function OpportunityList({
                         <span className="font-mono">
                           量比 <strong className="text-slate-200">{rep.vol_ratio.toFixed(2)}x</strong>
                         </span>
-                        {rep.rsi14 !== null && (
-                          <span className="font-mono">
-                            RSI14 <strong className="text-slate-200">{rep.rsi14.toFixed(1)}</strong>
-                          </span>
-                        )}
+                      </div>
+
+                      {/* Compact Raw Extension & Crowding Metrics Strip */}
+                      <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-slate-800/80 bg-slate-950/50 px-2.5 py-1 font-mono text-[11px] text-slate-400">
+                        <span>
+                          MA20乖离{' '}
+                          <strong
+                            className={
+                              rep.bias20 !== null && rep.bias20 !== undefined
+                                ? rep.bias20 >= 5
+                                  ? 'text-rose-300'
+                                  : rep.bias20 <= -4
+                                    ? 'text-cyan-300'
+                                    : 'text-slate-200'
+                                : 'text-slate-500'
+                            }
+                          >
+                            {formatMetricPct(rep.bias20)}
+                          </strong>
+                        </span>
+                        <span className="text-slate-700">·</span>
+                        <span>
+                          MA60乖离{' '}
+                          <strong className="text-slate-200">{formatMetricPct(rep.bias60)}</strong>
+                        </span>
+                        <span className="text-slate-700">·</span>
+                        <span>
+                          距60日低点{' '}
+                          <strong className="text-slate-200">
+                            {formatMetricPct(rep.drawup_60d_low)}
+                          </strong>
+                        </span>
+                        <span className="text-slate-700">·</span>
+                        <span>
+                          %B{' '}
+                          <strong
+                            className={
+                              rep.boll_pct_b !== null && rep.boll_pct_b !== undefined
+                                ? rep.boll_pct_b >= 0.85
+                                  ? 'text-rose-300'
+                                  : rep.boll_pct_b <= 0.15
+                                    ? 'text-cyan-300'
+                                    : 'text-slate-200'
+                                : 'text-slate-500'
+                            }
+                          >
+                            {rep.boll_pct_b !== null && rep.boll_pct_b !== undefined
+                              ? rep.boll_pct_b.toFixed(2)
+                              : '-'}
+                          </strong>
+                        </span>
+                        <span className="text-slate-700">·</span>
+                        <span>
+                          RSI14{' '}
+                          <strong
+                            className={
+                              rep.rsi14 !== null
+                                ? rep.rsi14 >= 65
+                                  ? 'text-rose-300'
+                                  : rep.rsi14 <= 38
+                                    ? 'text-cyan-300'
+                                    : 'text-slate-200'
+                                : 'text-slate-500'
+                            }
+                          >
+                            {rep.rsi14 !== null ? rep.rsi14.toFixed(1) : '-'}
+                          </strong>
+                        </span>
                       </div>
                     </div>
 
@@ -453,6 +573,18 @@ export function OpportunityList({
                             >
                               {m.name}
                             </button>
+                            {m.trend_stage && (
+                              <span
+                                className={`rounded border px-1 py-0.5 text-[10px] ${TREND_STAGE_META[m.trend_stage].badgeClass}`}
+                              >
+                                {TREND_STAGE_META[m.trend_stage].label}
+                              </span>
+                            )}
+                            {!isWatchlist && m.is_fresh && (
+                              <span className="rounded border border-teal-500/40 bg-teal-500/15 px-1 py-0.5 text-[10px] text-teal-200">
+                                新
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center gap-3 font-mono text-[11px]">
                             <span className={pctClass(m.pct_chg)}>{formatPct(m.pct_chg)}</span>
