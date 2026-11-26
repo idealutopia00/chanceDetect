@@ -5,6 +5,11 @@ import { FundReplayModal } from './components/FundReplayModal'
 import { Header } from './components/Header'
 import { OpportunityList } from './components/OpportunityList'
 import { StrategySidebar } from './components/StrategySidebar'
+import {
+  applyScenarioTemplate,
+  DEFAULT_SCENARIO_TEMPLATE,
+  type ScenarioTemplate,
+} from './config/scenarioTemplates'
 import type {
   HealthResponse,
   PresetRecord,
@@ -13,34 +18,8 @@ import type {
   StrategyMeta,
 } from './types'
 
-const DEFAULT_ENABLED_IDS = new Set([
-  'ma_bullish_alignment',
-  'volume_high_breakout',
-  'rsi_oversold_rebound',
-  'momentum_top_rank',
-])
-
 function buildDefaultConfig(strategies: StrategyMeta[]): ScanRequestConfig {
-  return {
-    strategies: strategies.map((s) => ({
-      strategy_id: s.id,
-      enabled: DEFAULT_ENABLED_IDS.has(s.id),
-      params: { ...s.default_params },
-    })),
-    regime_combine_mode: 'OR',
-    combine_mode: 'OR',
-    min_hits: 2,
-    hide_overheated: false,
-    freshness_cooldown_days: 10,
-    base_filter: {
-      min_avg_amount_20d: 1000,
-      min_listing_days: 60,
-      fund_types: ['ETF', 'LOF'],
-    },
-    share_class_preference: 'C',
-    group_by_index: true,
-    save_snapshot: false,
-  }
+  return applyScenarioTemplate(DEFAULT_SCENARIO_TEMPLATE, strategies)
 }
 
 function normalizePresetConfig(
@@ -163,6 +142,12 @@ export default function App() {
     runScan(normalized)
   }
 
+  const handleSelectTemplate = (template: ScenarioTemplate) => {
+    const next = applyScenarioTemplate(template, strategies, config)
+    setConfig(next)
+    runScan(next)
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <Header activeTab={activeTab} onTabChange={setActiveTab} health={health} />
@@ -177,6 +162,7 @@ export default function App() {
               loading={scanning}
               onConfigChange={setConfig}
               onRunScan={() => runScan(config)}
+              onSelectTemplate={handleSelectTemplate}
               onSavePreset={handleSavePreset}
               onDeletePreset={handleDeletePreset}
               onLoadPreset={handleLoadPreset}

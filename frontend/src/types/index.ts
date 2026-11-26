@@ -194,9 +194,12 @@ export interface ExchangeFundInfo {
   otc_mappings?: OTCMapping[]
 }
 
+export type ReplayEntryBasis = 'T+1_close'
+
 export interface FundReplayResponse {
   fund: ExchangeFundInfo
   lookback_days: number
+  entry_basis: ReplayEntryBasis
   trigger_count: number
   bars: ReplayBar[]
   triggers: ReplayTrigger[]
