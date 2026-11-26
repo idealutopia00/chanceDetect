@@ -74,50 +74,32 @@ export function StrategySidebar({
   const regimeStrategies = strategies.filter((s) => s.role === 'regime')
   const entryStrategies = strategies.filter((s) => s.role !== 'regime')
 
-  const toggleStrategy = (meta: StrategyMeta) => {
-    const existing = selectionMap.get(meta.id)
+  const updateSelections = (
+    updater: (meta: StrategyMeta, cur: ScanRequestConfig['strategies'][number]) => ScanRequestConfig['strategies'][number],
+  ) => {
     const nextList = strategies.map((m) => {
       const cur = selectionMap.get(m.id) ?? {
         strategy_id: m.id,
         enabled: false,
         params: { ...m.default_params },
       }
-      if (m.id === meta.id) {
-        return { ...cur, enabled: !(existing?.enabled ?? false) }
-      }
-      return cur
+      return updater(m, cur)
     })
     onConfigChange({ ...config, strategies: nextList })
+  }
+
+  const toggleStrategy = (meta: StrategyMeta) => {
+    updateSelections((m, cur) => (m.id === meta.id ? { ...cur, enabled: !cur.enabled } : cur))
   }
 
   const setRoleEnabled = (role: StrategyRole, enabled: boolean) => {
-    const nextList = strategies.map((m) => {
-      const cur = selectionMap.get(m.id) ?? {
-        strategy_id: m.id,
-        enabled: false,
-        params: { ...m.default_params },
-      }
-      if (m.role === role) {
-        return { ...cur, enabled }
-      }
-      return cur
-    })
-    onConfigChange({ ...config, strategies: nextList })
+    updateSelections((m, cur) => (m.role === role ? { ...cur, enabled } : cur))
   }
 
   const updateParam = (strategyId: string, key: string, value: unknown) => {
-    const nextList = strategies.map((m) => {
-      const cur = selectionMap.get(m.id) ?? {
-        strategy_id: m.id,
-        enabled: false,
-        params: { ...m.default_params },
-      }
-      if (m.id === strategyId) {
-        return { ...cur, params: { ...cur.params, [key]: value } }
-      }
-      return cur
-    })
-    onConfigChange({ ...config, strategies: nextList })
+    updateSelections((m, cur) =>
+      m.id === strategyId ? { ...cur, params: { ...cur.params, [key]: value } } : cur,
+    )
   }
 
   const enabledRegimeCount = regimeStrategies.filter((s) => selectionMap.get(s.id)?.enabled).length

@@ -6,6 +6,7 @@ import polars as pl
 from pydantic import BaseModel, Field
 
 from chancedetect.strategies.base import BaseStrategy
+from chancedetect.strategies.indicators import bias20_expr, ma_expr
 
 
 class MidTermUptrendParams(BaseModel):
@@ -34,20 +35,9 @@ class MidTermUptrendStrategy(BaseStrategy):
             else MidTermUptrendParams.model_validate(params)
         )
 
-        short_col = (
-            pl.col(f"ma{p.short_period}")
-            if f"ma{p.short_period}" in panel.columns
-            else pl.col("close").rolling_mean(p.short_period).over("symbol")
-        )
-        long_col = (
-            pl.col(f"ma{p.long_period}")
-            if f"ma{p.long_period}" in panel.columns
-            else pl.col("close").rolling_mean(p.long_period).over("symbol")
-        )
-
         df = panel.with_columns(
-            short_col.alias("_ma_short"),
-            long_col.alias("_ma_long"),
+            ma_expr(panel, p.short_period).alias("_ma_short"),
+            ma_expr(panel, p.long_period).alias("_ma_long"),
         ).with_columns(
             pl.col("_ma_long").shift(p.slope_lookback).over("symbol").alias("_ma_long_prev"),
         )
@@ -102,6 +92,12 @@ class TrendPullbackEntryParams(BaseModel):
     pullback_lookback: int = Field(default=3, ge=1, le=10, description="近期回踩均线回看天数")
     band_pct: float = Field(default=1.5, ge=0.1, le=8.0, description="回踩MA10/MA20支撑容忍带宽(%)")
     max_bias20_pct: float = Field(default=5.0, ge=0.5, le=20.0, description="当日相对MA20最大正乖离(%)")
+    max_boll_pct_b: float = Field(
+        default=0.75,
+        ge=0.2,
+        le=1.2,
+        description="当日布林带位置%B上限(防低波品种贴上轨误判回踩)",
+    )
     max_vol_ratio: float = Field(default=2.0, ge=0.5, le=10.0, description="当日最大量比上限(防放量派发)")
 
 
@@ -110,7 +106,7 @@ class TrendPullbackEntryStrategy(BaseStrategy):
     name = "强势回踩买点"
     category = "trend"
     role = "entry"
-    description = "中期上升趋势中价格回踩至MA10/MA20均线支撑附近并出现当日企稳阳线或翻红，成交量温和可控。"
+    description = "中期上升趋势中价格真正脱离上轨并回踩至MA10/MA20支撑附近，当日企稳阳线或翻红且成交量温和可控。"
     params_model = TrendPullbackEntryParams
 
     def evaluate(
@@ -125,40 +121,30 @@ class TrendPullbackEntryStrategy(BaseStrategy):
             else TrendPullbackEntryParams.model_validate(params)
         )
 
-        ma5_col = (
-            pl.col("ma5")
-            if "ma5" in panel.columns
-            else pl.col("close").rolling_mean(5).over("symbol")
-        )
-        ma10_col = (
-            pl.col("ma10")
-            if "ma10" in panel.columns
-            else pl.col("close").rolling_mean(10).over("symbol")
-        )
-        ma20_col = (
-            pl.col("ma20")
-            if "ma20" in panel.columns
-            else pl.col("close").rolling_mean(20).over("symbol")
-        )
-        ma60_col = (
-            pl.col("ma60")
-            if "ma60" in panel.columns
-            else pl.col("close").rolling_mean(60).over("symbol")
-        )
-        bias20_col = (
-            pl.col("bias20")
-            if "bias20" in panel.columns
-            else ((pl.col("close") - ma20_col) / ma20_col * 100.0)
-        )
-
         band = p.band_pct / 100.0
+        ma20 = ma_expr(panel, 20)
+        if "boll_pct_b" in panel.columns:
+            pct_b_col = pl.col("boll_pct_b")
+        else:
+            std20 = (
+                pl.col("boll_std20")
+                if "boll_std20" in panel.columns
+                else pl.col("close").rolling_std(20).over("symbol")
+            )
+            band_w = 4.0 * std20
+            pct_b_col = (
+                pl.when(band_w.abs() <= 1e-12)
+                .then(0.5)
+                .otherwise((pl.col("close") - (ma20 - 2.0 * std20)) / band_w)
+            )
 
         df = panel.with_columns(
-            ma5_col.alias("_ma5"),
-            ma10_col.alias("_ma10"),
-            ma20_col.alias("_ma20"),
-            ma60_col.alias("_ma60"),
-            bias20_col.alias("_bias20"),
+            ma_expr(panel, 5).alias("_ma5"),
+            ma_expr(panel, 10).alias("_ma10"),
+            ma20.alias("_ma20"),
+            ma_expr(panel, 60).alias("_ma60"),
+            bias20_expr(panel).alias("_bias20"),
+            pct_b_col.alias("_pct_b"),
         ).with_columns(
             pl.max_horizontal("_ma10", "_ma20").mul(1.0 + band).alias("_sup_upper"),
             pl.min_horizontal("_ma10", "_ma20").mul(1.0 - band).alias("_sup_lower"),
@@ -198,7 +184,10 @@ class TrendPullbackEntryStrategy(BaseStrategy):
             ((pl.col("close") >= pl.col("open")) | (pl.col("pct_chg").fill_null(0.0) > 0.0))
             & (pl.col("close") >= pl.col("_ma20") * (1.0 - band))
         )
-        not_stretched = pl.col("_bias20").fill_null(999.0) <= p.max_bias20_pct
+        not_stretched = (
+            (pl.col("_bias20").fill_null(999.0) <= p.max_bias20_pct)
+            & (pl.col("_pct_b").fill_null(0.5) <= p.max_boll_pct_b)
+        )
         vol_controlled = pl.col("vol_ratio").fill_null(1.0) <= p.max_vol_ratio
 
         signal_expr = (
@@ -260,27 +249,11 @@ class MaBullishAlignmentStrategy(BaseStrategy):
     ) -> pl.DataFrame:
         p = params if isinstance(params, MaBullishParams) else MaBullishParams.model_validate(params)
 
-        fast_col = (
-            pl.col(f"ma{p.fast_period}")
-            if f"ma{p.fast_period}" in panel.columns
-            else pl.col("close").rolling_mean(p.fast_period).over("symbol")
-        )
-        mid_col = (
-            pl.col(f"ma{p.mid_period}")
-            if f"ma{p.mid_period}" in panel.columns
-            else pl.col("close").rolling_mean(p.mid_period).over("symbol")
-        )
-        slow_col = (
-            pl.col(f"ma{p.slow_period}")
-            if f"ma{p.slow_period}" in panel.columns
-            else pl.col("close").rolling_mean(p.slow_period).over("symbol")
-        )
-
         df = (
             panel.with_columns(
-                fast_col.alias("_ma_f"),
-                mid_col.alias("_ma_m"),
-                slow_col.alias("_ma_s"),
+                ma_expr(panel, p.fast_period).alias("_ma_f"),
+                ma_expr(panel, p.mid_period).alias("_ma_m"),
+                ma_expr(panel, p.slow_period).alias("_ma_s"),
             )
             .with_columns(
                 pl.col("_ma_f").shift(1).over("symbol").alias("_ma_f_prev"),
@@ -380,19 +353,9 @@ class VolumeHighBreakoutStrategy(BaseStrategy):
             if p.lookback_days == 20 and "prev_high_20d" in panel.columns
             else pl.col("close").shift(1).rolling_max(p.lookback_days).over("symbol")
         )
-        bias20_expr = (
-            pl.col("bias20")
-            if "bias20" in panel.columns
-            else (
-                (pl.col("close") - pl.col("close").rolling_mean(20).over("symbol"))
-                / pl.col("close").rolling_mean(20).over("symbol")
-                * 100.0
-            )
-        )
-
         df = panel.with_columns(
             prev_high_expr.alias("_prev_high"),
-            bias20_expr.alias("_bias20"),
+            bias20_expr(panel).alias("_bias20"),
         )
 
         bias_ok = (

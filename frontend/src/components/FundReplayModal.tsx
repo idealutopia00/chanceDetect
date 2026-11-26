@@ -265,7 +265,7 @@ export function FundReplayModal({ symbol, config, onClose }: FundReplayModalProp
                   </div>
                   <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
                     <Info className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-                    盘后 T 日触发信号、次日 (T+1) 15:00 前申购按 T+1 收盘净值确认成本，统计 T+1 后持有 T+5 / T+10 / T+20 / T+40 个交易日（避开 7 日短赎费）表现
+                    盘后 T 日触发信号、次日 (T+1) 15:00 前申购按 T+1 收盘净值确认成本，统计自 T+1 起持有 5 / 10 / 20 / 40 个交易日（避开 7 日短赎费）的表现
                   </span>
                 </div>
 

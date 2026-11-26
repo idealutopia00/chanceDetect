@@ -2,7 +2,27 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import polars as pl
+
+TrendStage = Literal["oversold", "early", "mid", "overheated"]
+
+
+def ma_expr(panel: pl.DataFrame, period: int) -> pl.Expr:
+    """Return cached moving average column if present, otherwise compute lazily over each symbol."""
+    col_name = f"ma{period}"
+    if col_name in panel.columns:
+        return pl.col(col_name)
+    return pl.col("close").rolling_mean(period).over("symbol")
+
+
+def bias20_expr(panel: pl.DataFrame) -> pl.Expr:
+    """Return cached 20-day moving-average deviation (%) if present, otherwise compute lazily."""
+    if "bias20" in panel.columns:
+        return pl.col("bias20")
+    ma20 = ma_expr(panel, 20)
+    return (pl.col("close") - ma20) / ma20 * 100.0
 
 
 def rsi_expr(close_col: str = "close", period: int = 14) -> pl.Expr:
@@ -25,7 +45,7 @@ EXTENSION_FEATURE_COLS = (
 )
 
 
-def ensure_extension_features(df: pl.DataFrame) -> pl.DataFrame:
+def ensure_extension_features(df: pl.DataFrame, *, preserve_order: bool = False) -> pl.DataFrame:
     """Populate volatility-normalized extension & crowding features if missing (lazy legacy fallback)."""
     if df.is_empty():
         return df
@@ -34,7 +54,10 @@ def ensure_extension_features(df: pl.DataFrame) -> pl.DataFrame:
     if not missing:
         return df
 
-    out = df.sort(["symbol", "trade_date"])
+    if preserve_order:
+        out = df.with_row_index("_orig_row_idx").sort(["symbol", "trade_date"])
+    else:
+        out = df.sort(["symbol", "trade_date"])
 
     # Ensure prerequisite columns exist if a minimal frame was supplied
     prereq_exprs: list[pl.Expr] = []
@@ -119,6 +142,8 @@ def ensure_extension_features(df: pl.DataFrame) -> pl.DataFrame:
     out = out.with_columns(exprs)
     if need_60d_range:
         out = out.drop(["_tmp_low_60d", "_tmp_high_60d"])
+    if preserve_order:
+        out = out.sort("_orig_row_idx").drop("_orig_row_idx")
     return out
 
 

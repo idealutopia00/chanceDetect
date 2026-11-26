@@ -111,6 +111,7 @@ def build_fund_replay(
             config.combine_mode,
             config.min_hits,
             regime_combine_mode=config.regime_combine_mode,
+            freshness_cooldown_days=config.freshness_cooldown_days,
         )
         sym_signals = combined_full.filter(pl.col("symbol") == symbol).sort("trade_date")
     else:
@@ -118,6 +119,7 @@ def build_fund_replay(
             pl.lit(False).alias("actionable_signal"),
             pl.lit(False).alias("regime_pass"),
             pl.lit(False).alias("combined_signal"),
+            pl.lit("mid").alias("trend_stage"),
             pl.lit(0).alias("hit_count"),
             pl.lit(0.0).alias("composite_score"),
         )
@@ -161,10 +163,14 @@ def build_fund_replay(
             }
         )
 
-    # Extract triggers matching the active two-stage funnel (actionable_signal or regime_pass)
+    # Extract triggers matching the active two-stage funnel (and anti-chase toggle when applicable)
+    trigger_filter = pl.col(signal_col)
+    if has_entries and config.hide_overheated:
+        trigger_filter = trigger_filter & (pl.col("trend_stage") != "overheated")
+
     triggers: list[dict[str, Any]] = []
     trigger_indices: list[int] = []
-    for row in sym_signals.filter(pl.col(signal_col)).iter_rows(named=True):
+    for row in sym_signals.filter(trigger_filter).iter_rows(named=True):
         dt_str = row["trade_date"].isoformat()
         idx = date_to_idx.get(dt_str)
         if idx is None:

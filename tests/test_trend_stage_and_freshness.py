@@ -748,6 +748,100 @@ def test_cli_scan_two_stage_trend_stage_fresh_and_hide_overheated(
     assert "516310" not in res_hidden.output
 
 
+def test_pullback_entry_rejects_low_vol_upper_band_grind_and_replay_honors_hide_overheated(
+    tmp_settings: Settings,
+) -> None:
+    """Regression test for #3+#4+#5 integration:
+    1) Low-volatility uptrend hugging upper Bollinger band (boll_pct_b > 0.75) must NOT trigger
+       trend_pullback_entry even if raw bias20 < 5% and low dips within 1.5% of MA10.
+    2) Replay honors hide_overheated=True so historical markers match scan() anti-chase filtering.
+    """
+    app = create_app(tmp_settings)
+    sqlite_store = app.state.sqlite_store
+    bar_store = app.state.bar_store
+
+    funds = [
+        ExchangeFund(
+            symbol="sh516310",
+            code="516310",
+            exchange="sh",
+            name="银行ETF易方达",
+            fund_type="ETF",
+            index_code="399986",
+            index_name="中证银行指数",
+            company_id="80000229",
+            company_name="易方达基金",
+        )
+    ]
+    mappings = [
+        OTCFundMapping(
+            exchange_symbol="sh516310",
+            otc_code="009860",
+            otc_name="易方达中证银行ETF联接C",
+            share_class="C",
+            mapping_type="FEEDER",
+            purchase_status="开放申购",
+            fee_rate="0.00%",
+        )
+    ]
+    sqlite_store.replace_universe(funds, mappings)
+
+    # Low-vol steady bank-like grind: +0.25%/day for 88 days, tiny -0.1% pause, then +0.4% at upper band
+    n = 90
+    closes = [1.20 * (1.0025**i) for i in range(88)]
+    closes.append(closes[-1] * 0.999)
+    closes.append(closes[-1] * 1.008)
+    vols = [200_000.0] * 89 + [450_000.0]
+    bars = make_synthetic_bars("sh516310", closes, volumes=vols, amounts=[30_000.0] * n)
+    bar_store.upsert_daily_bars(bars)
+    bar_store.save_features(compute_base_features(bar_store.load_daily_bars()))
+    sqlite_store.update_fund_bar_metrics(bar_store.compute_symbol_metrics())
+
+    with TestClient(app) as client:
+        # Under right-side mainline + pullback entry, upper-band grind stays in watchlist (NOT actionable)
+        scan_res = client.post(
+            "/api/v1/scan",
+            json={
+                "strategies": [
+                    {"strategy_id": "mid_term_uptrend", "enabled": True},
+                    {"strategy_id": "trend_pullback_entry", "enabled": True},
+                ],
+                "regime_combine_mode": "OR",
+                "combine_mode": "OR",
+            },
+        )
+        assert scan_res.status_code == 200
+        body = scan_res.json()
+        assert body["actionable_fund_count"] == 0
+        assert body["watchlist_fund_count"] == 1
+        assert body["watchlist_groups"][0]["representative"]["trend_stage"] == "overheated"
+
+        # Replay with breakout entry: triggers without hide_overheated, filtered out with hide_overheated=True
+        base_cfg = {
+            "strategies": [
+                {"strategy_id": "mid_term_uptrend", "enabled": True},
+                {"strategy_id": "volume_high_breakout", "enabled": True},
+            ],
+            "regime_combine_mode": "OR",
+            "combine_mode": "OR",
+            "freshness_cooldown_days": 5,
+        }
+        rep_all = client.post(
+            "/api/v1/funds/sh516310/replay",
+            json={"config": {**base_cfg, "hide_overheated": False}, "lookback_days": 200},
+        )
+        assert rep_all.status_code == 200
+        assert rep_all.json()["trigger_count"] >= 1
+
+        rep_filtered = client.post(
+            "/api/v1/funds/sh516310/replay",
+            json={"config": {**base_cfg, "hide_overheated": True}, "lookback_days": 200},
+        )
+        assert rep_filtered.status_code == 200
+        assert rep_filtered.json()["trigger_count"] < rep_all.json()["trigger_count"]
+
+
+
 
 
 

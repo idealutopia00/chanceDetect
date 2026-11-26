@@ -20,6 +20,7 @@ from chancedetect.strategies.engine import (
     StrategyEngine,
     StrategySelection,
 )
+from chancedetect.strategies.indicators import TrendStage
 
 app = typer.Typer(name="chancedetect", help="ChanceDetect ETF/LOF -> OTC fund opportunity scanner")
 console = Console()
@@ -121,8 +122,8 @@ def recompute_features() -> None:
     console.print(f"[green]Feature cache recomputed:[/green] {rows} rows")
 
 
-def _format_stage_cell(stage: str) -> str:
-    styles = {
+def _format_stage_cell(stage: TrendStage | str) -> str:
+    styles: dict[str, str] = {
         "oversold": "cyan",
         "early": "green",
         "mid": "yellow",

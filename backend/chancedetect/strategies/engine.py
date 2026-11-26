@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -77,6 +78,39 @@ def sort_otc_mappings(
         return (suspended, cls_rank, m.otc_code)
 
     return sorted(seen.values(), key=_key)
+
+
+@dataclass(frozen=True)
+class _GroupBuildContext:
+    enabled_ids: list[str]
+    fund_by_sym: dict[str, ExchangeFund]
+    mappings_by_sym: dict[str, list[OTCFundMapping]]
+    strat_names: dict[str, str]
+    strat_roles: dict[str, str]
+    config: ScanRequestConfig
+
+
+def _aggregate_stage_exprs(
+    sig_cols: list[str],
+    score_cols: list[str],
+    *,
+    required_hits: int,
+    empty_pass: bool,
+) -> tuple[pl.Expr, pl.Expr, pl.Expr]:
+    """Build (hit_count, pass_flag, stage_score) Polars expressions for a funnel stage."""
+    if not sig_cols:
+        return pl.lit(0, dtype=pl.Int32), pl.lit(empty_pass), pl.lit(0.0)
+    hit_count = pl.sum_horizontal(
+        [pl.col(c).fill_null(False).cast(pl.Int32) for c in sig_cols]
+    )
+    score_sum = pl.sum_horizontal([pl.col(c).fill_null(0.0) for c in score_cols])
+    pass_expr = hit_count >= required_hits
+    score_expr = (
+        pl.when(hit_count > 0)
+        .then((score_sum / hit_count + (hit_count - 1) * 12.0).round(2))
+        .otherwise(0.0)
+    )
+    return hit_count, pass_expr, score_expr
 
 
 class StrategyEngine:
@@ -216,7 +250,8 @@ class StrategyEngine:
         if panel.is_empty() or not enabled_ids:
             return panel.head(0)
 
-        panel = ensure_extension_features(panel)
+        # Preserve incoming row order so positional attachment of pre-evaluated strategy columns never misaligns
+        panel = ensure_extension_features(panel, preserve_order=True)
         base = panel.select(
             [
                 "symbol",
@@ -283,60 +318,28 @@ class StrategyEngine:
 
         # Stage 1: Trend Regime filter evaluation
         has_regimes = len(regime_sig_cols) > 0
-        if has_regimes:
-            regime_hit_count_expr = pl.sum_horizontal(
-                [pl.col(c).fill_null(False).cast(pl.Int32) for c in regime_sig_cols]
-            )
-            regime_score_sum_expr = pl.sum_horizontal(
-                [pl.col(c).fill_null(0.0) for c in regime_score_cols]
-            )
-            regime_required = len(regime_sig_cols) if regime_combine_mode == "AND" else 1
-            regime_pass_expr = regime_hit_count_expr >= regime_required
-            regime_score_expr = (
-                pl.when(regime_hit_count_expr > 0)
-                .then(
-                    (
-                        regime_score_sum_expr / regime_hit_count_expr
-                        + (regime_hit_count_expr - 1) * 12.0
-                    ).round(2)
-                )
-                .otherwise(0.0)
-            )
-        else:
-            regime_hit_count_expr = pl.lit(0, dtype=pl.Int32)
-            regime_pass_expr = pl.lit(True)
-            regime_score_expr = pl.lit(0.0)
+        regime_required = len(regime_sig_cols) if regime_combine_mode == "AND" else 1
+        regime_hit_count_expr, regime_pass_expr, regime_score_expr = _aggregate_stage_exprs(
+            regime_sig_cols,
+            regime_score_cols,
+            required_hits=regime_required,
+            empty_pass=True,
+        )
 
         # Stage 2: Entry Trigger evaluation
         has_entries = len(entry_sig_cols) > 0
-        if has_entries:
-            entry_hit_count_expr = pl.sum_horizontal(
-                [pl.col(c).fill_null(False).cast(pl.Int32) for c in entry_sig_cols]
-            )
-            entry_score_sum_expr = pl.sum_horizontal(
-                [pl.col(c).fill_null(0.0) for c in entry_score_cols]
-            )
-            if combine_mode == "AND":
-                entry_required = len(entry_sig_cols)
-            elif combine_mode == "OR":
-                entry_required = 1
-            else:
-                entry_required = max(1, min(min_hits, len(entry_sig_cols)))
-            entry_pass_expr = entry_hit_count_expr >= entry_required
-            entry_score_expr = (
-                pl.when(entry_hit_count_expr > 0)
-                .then(
-                    (
-                        entry_score_sum_expr / entry_hit_count_expr
-                        + (entry_hit_count_expr - 1) * 12.0
-                    ).round(2)
-                )
-                .otherwise(0.0)
-            )
+        if combine_mode == "AND":
+            entry_required = len(entry_sig_cols)
+        elif combine_mode == "OR":
+            entry_required = 1
         else:
-            entry_hit_count_expr = pl.lit(0, dtype=pl.Int32)
-            entry_pass_expr = pl.lit(False)
-            entry_score_expr = pl.lit(0.0)
+            entry_required = max(1, min(min_hits, len(entry_sig_cols)))
+        entry_hit_count_expr, entry_pass_expr, entry_score_expr = _aggregate_stage_exprs(
+            entry_sig_cols,
+            entry_score_cols,
+            required_hits=entry_required,
+            empty_pass=False,
+        )
 
         cooldown = max(1, freshness_cooldown_days)
         act_int = pl.col("actionable_signal").cast(pl.Int32)
@@ -406,12 +409,7 @@ class StrategyEngine:
         day_rows: pl.DataFrame,
         *,
         bucket: Literal["actionable", "watchlist"],
-        enabled_ids: list[str],
-        fund_by_sym: dict[str, ExchangeFund],
-        mappings_by_sym: dict[str, list[OTCFundMapping]],
-        strat_names: dict[str, str],
-        strat_roles: dict[str, str],
-        config: ScanRequestConfig,
+        ctx: _GroupBuildContext,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Materialize fund items and deduplicated Index Opportunity Groups for a funnel bucket."""
         hit_col = "entry_hit_count" if bucket == "actionable" else "regime_hit_count"
@@ -425,18 +423,18 @@ class StrategyEngine:
         items: list[dict[str, Any]] = []
         for row in sorted_rows.iter_rows(named=True):
             sym = row["symbol"]
-            fund = fund_by_sym.get(sym)
+            fund = ctx.fund_by_sym.get(sym)
             if fund is None:
                 continue
 
             matched_regimes: list[dict[str, Any]] = []
             hit_entries: list[dict[str, Any]] = []
-            for idx, sid in enumerate(enabled_ids):
+            for idx, sid in enumerate(ctx.enabled_ids):
                 if row.get(f"_sig_{idx}"):
-                    role = strat_roles.get(sid, "entry")
+                    role = ctx.strat_roles.get(sid, "entry")
                     info = {
                         "strategy_id": sid,
-                        "strategy_name": strat_names.get(sid, sid),
+                        "strategy_name": ctx.strat_names.get(sid, sid),
                         "role": role,
                         "score": round(float(row.get(f"_scr_{idx}") or 0.0), 2),
                         "reason": str(row.get(f"_rsn_{idx}") or ""),
@@ -447,8 +445,8 @@ class StrategyEngine:
                         hit_entries.append(info)
 
             fund_mappings = sort_otc_mappings(
-                mappings_by_sym.get(sym, []),
-                preference=config.share_class_preference,
+                ctx.mappings_by_sym.get(sym, []),
+                preference=ctx.config.share_class_preference,
             )
             items.append(
                 {
@@ -495,7 +493,7 @@ class StrategyEngine:
         for item in items:
             gkey = (
                 item["index_code"]
-                if (config.group_by_index and item["index_code"])
+                if (ctx.config.group_by_index and item["index_code"])
                 else item["symbol"]
             )
             groups_map.setdefault(gkey, []).append(item)
@@ -512,8 +510,8 @@ class StrategyEngine:
 
             all_group_otc: list[OTCFundMapping] = []
             for m_item in members_sorted:
-                all_group_otc.extend(mappings_by_sym.get(m_item["symbol"], []))
-            sorted_otc = sort_otc_mappings(all_group_otc, preference=config.share_class_preference)
+                all_group_otc.extend(ctx.mappings_by_sym.get(m_item["symbol"], []))
+            sorted_otc = sort_otc_mappings(all_group_otc, preference=ctx.config.share_class_preference)
 
             max_hits = max(m["hit_count"] for m in members_sorted)
             max_score = max(m["composite_score"] for m in members_sorted)
@@ -589,33 +587,21 @@ class StrategyEngine:
             day_actionable = day_actionable.filter(pl.col("trend_stage") != "overheated")
         day_watchlist = day_slice.filter(pl.col("watchlist_signal"))
 
-        fund_by_sym: dict[str, ExchangeFund] = {
-            f.symbol: f for f in self.sqlite.list_exchange_funds(active_only=True)
-        }
-        mappings_by_sym = self.sqlite.get_all_mappings_grouped()
         all_strats = self.registry.list_all()
-        strat_names = {s.id: s.name for s in all_strats}
-        strat_roles = {s.id: s.role for s in all_strats}
-
-        actionable_items, actionable_groups = self._build_groups(
-            day_actionable,
-            bucket="actionable",
+        group_ctx = _GroupBuildContext(
             enabled_ids=enabled_ids,
-            fund_by_sym=fund_by_sym,
-            mappings_by_sym=mappings_by_sym,
-            strat_names=strat_names,
-            strat_roles=strat_roles,
+            fund_by_sym={f.symbol: f for f in self.sqlite.list_exchange_funds(active_only=True)},
+            mappings_by_sym=self.sqlite.get_all_mappings_grouped(),
+            strat_names={s.id: s.name for s in all_strats},
+            strat_roles={s.id: s.role for s in all_strats},
             config=config,
         )
+
+        actionable_items, actionable_groups = self._build_groups(
+            day_actionable, bucket="actionable", ctx=group_ctx
+        )
         watchlist_items, watchlist_groups = self._build_groups(
-            day_watchlist,
-            bucket="watchlist",
-            enabled_ids=enabled_ids,
-            fund_by_sym=fund_by_sym,
-            mappings_by_sym=mappings_by_sym,
-            strat_names=strat_names,
-            strat_roles=strat_roles,
-            config=config,
+            day_watchlist, bucket="watchlist", ctx=group_ctx
         )
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
