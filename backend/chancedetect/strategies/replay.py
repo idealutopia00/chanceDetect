@@ -95,7 +95,12 @@ def build_fund_replay(
 
     if enabled_ids:
         combined_full = engine.combine_signals(
-            panel, per_strategy, enabled_ids, config.combine_mode, config.min_hits
+            panel,
+            per_strategy,
+            enabled_ids,
+            config.combine_mode,
+            config.min_hits,
+            regime_combine_mode=config.regime_combine_mode,
         )
         sym_signals = combined_full.filter(pl.col("symbol") == symbol).sort("trade_date")
     else:

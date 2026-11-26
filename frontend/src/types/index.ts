@@ -1,4 +1,6 @@
 export type StrategyCategory = 'trend' | 'mean_reversion' | 'momentum'
+export type StrategyRole = 'regime' | 'entry'
+export type RegimeCombineMode = 'AND' | 'OR'
 export type CombineMode = 'AND' | 'OR' | 'RESONANCE'
 export type SharePreference = 'C' | 'A'
 
@@ -15,6 +17,7 @@ export interface StrategyMeta {
   id: string
   name: string
   category: StrategyCategory
+  role: StrategyRole
   description: string
   default_params: Record<string, unknown>
   params_schema: {
@@ -36,6 +39,7 @@ export interface BaseUniverseFilter {
 
 export interface ScanRequestConfig {
   strategies: StrategySelection[]
+  regime_combine_mode: RegimeCombineMode
   combine_mode: CombineMode
   min_hits: number
   base_filter: BaseUniverseFilter
@@ -59,6 +63,7 @@ export interface OTCMapping {
 export interface HitStrategyInfo {
   strategy_id: string
   strategy_name: string
+  role?: StrategyRole
   score: number
   reason: string
 }
@@ -79,6 +84,7 @@ export interface HitFundItem {
   rsi14: number | null
   hit_count: number
   composite_score: number
+  matched_regimes?: HitStrategyInfo[]
   hit_strategies: HitStrategyInfo[]
   otc_mappings: OTCMapping[]
 }
@@ -102,9 +108,16 @@ export interface ScanResponse {
   scanned_fund_count: number
   hit_fund_count: number
   hit_index_count: number
+  actionable_fund_count: number
+  actionable_index_count: number
+  watchlist_fund_count: number
+  watchlist_index_count: number
+  regime_combine_mode: RegimeCombineMode
   combine_mode: CombineMode
   share_class_preference: SharePreference
   groups: OpportunityGroup[]
+  actionable_groups: OpportunityGroup[]
+  watchlist_groups: OpportunityGroup[]
 }
 
 export interface PresetRecord {

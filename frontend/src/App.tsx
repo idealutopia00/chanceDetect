@@ -27,6 +27,7 @@ function buildDefaultConfig(strategies: StrategyMeta[]): ScanRequestConfig {
       enabled: DEFAULT_ENABLED_IDS.has(s.id),
       params: { ...s.default_params },
     })),
+    regime_combine_mode: 'OR',
     combine_mode: 'OR',
     min_hits: 2,
     base_filter: {
@@ -37,6 +38,47 @@ function buildDefaultConfig(strategies: StrategyMeta[]): ScanRequestConfig {
     share_class_preference: 'C',
     group_by_index: true,
     save_snapshot: false,
+  }
+}
+
+function normalizePresetConfig(
+  raw: Partial<ScanRequestConfig>,
+  strategies: StrategyMeta[],
+): ScanRequestConfig {
+  const defaults = buildDefaultConfig(strategies)
+  const rawById = new Map((raw.strategies ?? []).map((s) => [s.strategy_id, s]))
+  const mergedStrategies =
+    raw.strategies && raw.strategies.length > 0
+      ? strategies.map((meta) => {
+          const saved = rawById.get(meta.id)
+          if (saved) {
+            return {
+              strategy_id: meta.id,
+              enabled: Boolean(saved.enabled),
+              params: { ...meta.default_params, ...(saved.params ?? {}) },
+            }
+          }
+          return {
+            strategy_id: meta.id,
+            enabled: false,
+            params: { ...meta.default_params },
+          }
+        })
+      : defaults.strategies
+
+  return {
+    ...defaults,
+    ...raw,
+    strategies: mergedStrategies,
+    regime_combine_mode: raw.regime_combine_mode ?? 'OR',
+    combine_mode: raw.combine_mode ?? 'OR',
+    min_hits: raw.min_hits ?? defaults.min_hits,
+    base_filter: {
+      ...defaults.base_filter,
+      ...(raw.base_filter ?? {}),
+    },
+    share_class_preference: raw.share_class_preference ?? defaults.share_class_preference,
+    group_by_index: raw.group_by_index ?? defaults.group_by_index,
   }
 }
 
@@ -112,8 +154,9 @@ export default function App() {
   }
 
   const handleLoadPreset = (preset: PresetRecord) => {
-    setConfig(preset.config)
-    runScan(preset.config)
+    const normalized = normalizePresetConfig(preset.config, strategies)
+    setConfig(normalized)
+    runScan(normalized)
   }
 
   return (

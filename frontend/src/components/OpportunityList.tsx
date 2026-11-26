@@ -4,6 +4,8 @@ import {
   ChevronDown,
   ChevronUp,
   Copy,
+  Eye,
+  Flame,
   LineChart,
   Sparkles,
   Zap,
@@ -40,6 +42,7 @@ export function OpportunityList({
   error,
   onSelectFund,
 }: OpportunityListProps) {
+  const [activeBucket, setActiveBucket] = useState<'actionable' | 'watchlist'>('actionable')
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null)
   const [copiedCode, setCopiedCode] = useState<string | null>(null)
 
@@ -81,6 +84,16 @@ export function OpportunityList({
     )
   }
 
+  const actionableGroups = result.actionable_groups ?? result.groups
+  const watchlistGroups = result.watchlist_groups ?? []
+  const actionableIndexCount = result.actionable_index_count ?? actionableGroups.length
+  const actionableFundCount = result.actionable_fund_count ?? result.hit_fund_count
+  const watchlistIndexCount = result.watchlist_index_count ?? watchlistGroups.length
+  const watchlistFundCount = result.watchlist_fund_count ?? 0
+
+  const activeGroups = activeBucket === 'actionable' ? actionableGroups : watchlistGroups
+  const isWatchlist = activeBucket === 'watchlist'
+
   return (
     <div className="space-y-4">
       {/* Telemetry Banner */}
@@ -96,10 +109,14 @@ export function OpportunityList({
           </span>
           <span className="text-slate-600">|</span>
           <span className="text-slate-300">
-            命中{' '}
-            <strong className="font-mono text-amber-300">{result.hit_index_count}</strong> 个标的指数 /{' '}
-            <strong className="font-mono text-slate-100">{result.hit_fund_count}</strong> 只场内基金
-            <span className="ml-1 text-slate-500">(过滤池 {result.scanned_fund_count} 只)</span>
+            可买{' '}
+            <strong className="font-mono text-amber-300">{actionableIndexCount}</strong> 指数 /{' '}
+            <strong className="font-mono text-slate-100">{actionableFundCount}</strong> 基金
+            <span className="mx-1.5 text-slate-600">·</span>
+            观察{' '}
+            <strong className="font-mono text-purple-300">{watchlistIndexCount}</strong> 指数 /{' '}
+            <strong className="font-mono text-slate-100">{watchlistFundCount}</strong> 基金
+            <span className="ml-1.5 text-slate-500">(过滤池 {result.scanned_fund_count} 只)</span>
           </span>
         </div>
         <div className="text-[11px] text-slate-400">
@@ -110,23 +127,106 @@ export function OpportunityList({
         </div>
       </div>
 
-      {result.groups.length === 0 ? (
+      {/* Two-Stage Result Bucket Tabs */}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={() => {
+            setActiveBucket('actionable')
+            setExpandedGroup(null)
+          }}
+          className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left transition ${
+            !isWatchlist
+              ? 'border-amber-500/50 bg-amber-500/10 text-amber-200 shadow-sm shadow-amber-500/10'
+              : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <Flame className={`h-4 w-4 ${!isWatchlist ? 'text-amber-400' : 'text-slate-500'}`} />
+            <div>
+              <div className="text-xs font-semibold">今日可买信号</div>
+              <div className="text-[11px] opacity-75">通过趋势过滤并触发买点</div>
+            </div>
+          </div>
+          <div className="text-right font-mono text-xs">
+            <div className={!isWatchlist ? 'font-bold text-amber-300' : 'text-slate-300'}>
+              {actionableIndexCount} 指数
+            </div>
+            <div className="text-[10px] text-slate-400">{actionableFundCount} 只基金</div>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setActiveBucket('watchlist')
+            setExpandedGroup(null)
+          }}
+          className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left transition ${
+            isWatchlist
+              ? 'border-purple-500/50 bg-purple-500/10 text-purple-200 shadow-sm shadow-purple-500/10'
+              : 'border-slate-800 bg-slate-900/60 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            <Eye className={`h-4 w-4 ${isWatchlist ? 'text-purple-400' : 'text-slate-500'}`} />
+            <div>
+              <div className="text-xs font-semibold">主线观察 · 等回踩</div>
+              <div className="text-[11px] opacity-75">处于强势趋势，暂未触发买点</div>
+            </div>
+          </div>
+          <div className="text-right font-mono text-xs">
+            <div className={isWatchlist ? 'font-bold text-purple-300' : 'text-slate-300'}>
+              {watchlistIndexCount} 指数
+            </div>
+            <div className="text-[10px] text-slate-400">{watchlistFundCount} 只基金</div>
+          </div>
+        </button>
+      </div>
+
+      {activeGroups.length === 0 ? (
         <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-10 text-center">
-          <p className="text-sm font-medium text-slate-200">当前策略组合在该交易日暂无命中标的</p>
-          <p className="mt-1 text-xs text-slate-400">
-            可以尝试切换组合逻辑为「任一命中」、放宽参数阈值，或降低 20 日均额底线。
-          </p>
+          {!isWatchlist ? (
+            <>
+              <p className="text-sm font-medium text-slate-200">
+                当前策略组合在「今日可买信号」中暂无命中标的
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                {watchlistGroups.length > 0
+                  ? `当前有 ${watchlistIndexCount} 个强势主线指数处于观察状态，可切换至「主线观察 · 等回踩」跟踪。`
+                  : '可以尝试切换组合逻辑为「任一触发」、放宽参数阈值，或降低 20 日均额底线。'}
+              </p>
+              {watchlistGroups.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setActiveBucket('watchlist')}
+                  className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-purple-500/40 bg-purple-500/15 px-3 py-1.5 text-xs font-medium text-purple-200 hover:bg-purple-500/25"
+                >
+                  <Eye className="h-3.5 w-3.5" />
+                  查看 {watchlistIndexCount} 个主线观察标的
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-medium text-slate-200">「主线观察 · 等回踩」暂无标的</p>
+              <p className="mt-1 text-xs text-slate-400">
+                未启用趋势过滤（纯左侧扫描）或所有满足趋势过滤的主线标的均已触发买点。
+              </p>
+            </>
+          )}
         </div>
       ) : (
         <div className="space-y-3">
-          {result.groups.map((grp: OpportunityGroup) => {
+          {activeGroups.map((grp: OpportunityGroup) => {
             const rep = grp.representative
             const isExpanded = expandedGroup === grp.group_key
             const previewOtcs = grp.otc_funds.slice(0, 4)
+            const matchedRegimes = rep.matched_regimes ?? []
 
             return (
               <div
-                key={grp.group_key}
+                key={`${activeBucket}-${grp.group_key}`}
                 className="overflow-hidden rounded-xl border border-slate-800/90 bg-slate-900/75 transition hover:border-slate-700"
               >
                 <div className="p-4">
@@ -134,9 +234,7 @@ export function OpportunityList({
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="text-sm font-bold text-slate-100">
-                          {grp.index_name}
-                        </h3>
+                        <h3 className="text-sm font-bold text-slate-100">{grp.index_name}</h3>
                         {grp.index_code && (
                           <span className="rounded bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
                             指数 {grp.index_code}
@@ -191,11 +289,27 @@ export function OpportunityList({
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-right">
-                        <div className="text-[10px] text-amber-300/80">
-                          命中 {grp.max_hit_count} 策略
+                      <div
+                        className={`rounded-lg border px-2.5 py-1 text-right ${
+                          isWatchlist
+                            ? 'border-purple-500/30 bg-purple-500/10'
+                            : 'border-amber-500/30 bg-amber-500/10'
+                        }`}
+                      >
+                        <div
+                          className={`text-[10px] ${
+                            isWatchlist ? 'text-purple-300/80' : 'text-amber-300/80'
+                          }`}
+                        >
+                          {isWatchlist
+                            ? `满足 ${grp.max_hit_count} 主线`
+                            : `命中 ${grp.max_hit_count} 买点`}
                         </div>
-                        <div className="font-mono text-sm font-bold text-amber-300">
+                        <div
+                          className={`font-mono text-sm font-bold ${
+                            isWatchlist ? 'text-purple-300' : 'text-amber-300'
+                          }`}
+                        >
                           {grp.max_composite_score.toFixed(1)}
                         </div>
                       </div>
@@ -210,17 +324,37 @@ export function OpportunityList({
                     </div>
                   </div>
 
-                  {/* Hit Strategy Reasons */}
+                  {/* Matched Trend Regimes & Hit Entry Triggers */}
                   <div className="mt-2.5 flex flex-wrap gap-1.5">
+                    {matchedRegimes.map((mr) => (
+                      <span
+                        key={`regime-${mr.strategy_id}`}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-purple-500/35 bg-purple-950/40 px-2 py-1 text-[11px]"
+                      >
+                        <span className="rounded bg-purple-500/20 px-1 text-[10px] font-semibold text-purple-300">
+                          主线
+                        </span>
+                        <span className="font-medium text-purple-200">{mr.strategy_name}</span>
+                        <span className="text-slate-400">{mr.reason}</span>
+                      </span>
+                    ))}
                     {rep.hit_strategies.map((hs) => (
                       <span
-                        key={hs.strategy_id}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700/80 bg-slate-950/70 px-2 py-1 text-[11px]"
+                        key={`entry-${hs.strategy_id}`}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-amber-500/35 bg-slate-950/70 px-2 py-1 text-[11px]"
                       >
+                        <span className="rounded bg-amber-500/20 px-1 text-[10px] font-semibold text-amber-300">
+                          买点
+                        </span>
                         <span className="font-medium text-amber-300">{hs.strategy_name}</span>
                         <span className="text-slate-400">{hs.reason}</span>
                       </span>
                     ))}
+                    {isWatchlist && rep.hit_strategies.length === 0 && (
+                      <span className="inline-flex items-center rounded-md border border-slate-700/80 bg-slate-950/60 px-2 py-1 text-[11px] text-slate-400">
+                        暂未触发买点 · 等待回踩或启动信号
+                      </span>
+                    )}
                   </div>
 
                   {/* Quick OTC Counterparts Strip */}
@@ -232,9 +366,7 @@ export function OpportunityList({
                       {(grp.otc_count > 4 || grp.member_count > 1) && (
                         <button
                           type="button"
-                          onClick={() =>
-                            setExpandedGroup(isExpanded ? null : grp.group_key)
-                          }
+                          onClick={() => setExpandedGroup(isExpanded ? null : grp.group_key)}
                           className="inline-flex items-center gap-1 text-[11px] text-amber-400 hover:text-amber-300"
                         >
                           {isExpanded ? '收起详情' : '展开全部同指数ETF与场外份额'}
@@ -290,7 +422,9 @@ export function OpportunityList({
                                 {otc.purchase_status}
                               </span>
                             )}
-                            {otc.fee_rate && <span className="font-mono text-slate-500">{otc.fee_rate}</span>}
+                            {otc.fee_rate && (
+                              <span className="font-mono text-slate-500">{otc.fee_rate}</span>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -325,7 +459,9 @@ export function OpportunityList({
                             <span className="text-slate-400">
                               均额 {Math.round(m.avg_amount_20d)}万
                             </span>
-                            <span className="text-amber-300">{m.composite_score.toFixed(1)}分</span>
+                            <span className={isWatchlist ? 'text-purple-300' : 'text-amber-300'}>
+                              {m.composite_score.toFixed(1)}分
+                            </span>
                           </div>
                         </div>
                       ))}

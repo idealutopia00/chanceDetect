@@ -19,6 +19,7 @@ class MomentumTopRankStrategy(BaseStrategy):
     id = "momentum_top_rank"
     name = "横截面动量轮动 Top K"
     category = "momentum"
+    role = "regime"
     description = "每日在全市场基金池内按近 N 日（风险调整）动量得分横向排名，选取最强前 K 只强势品种。"
     params_model = MomentumTopRankParams
 
@@ -118,6 +119,7 @@ class RelativeStrengthRsStrategy(BaseStrategy):
     id = "relative_strength_rs"
     name = "相对大盘超额强弱 RS"
     category = "momentum"
+    role = "regime"
     description = "相对基准指数的强弱比值曲线(RS)站上均线且创近期新高，同时近 N 日持续跑赢基准。"
     params_model = RelativeStrengthRsParams
 

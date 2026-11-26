@@ -9,6 +9,7 @@ import polars as pl
 from pydantic import BaseModel
 
 StrategyCategory = Literal["trend", "mean_reversion", "momentum"]
+StrategyRole = Literal["regime", "entry"]
 
 
 class BaseStrategy(ABC):
@@ -17,6 +18,7 @@ class BaseStrategy(ABC):
     id: str
     name: str
     category: StrategyCategory
+    role: StrategyRole = "entry"
     description: str
     params_model: type[BaseModel]
 
@@ -44,6 +46,7 @@ class BaseStrategy(ABC):
             "id": self.id,
             "name": self.name,
             "category": self.category,
+            "role": self.role,
             "description": self.description,
             "default_params": self.default_params().model_dump(),
             "params_schema": self.params_model.model_json_schema(),

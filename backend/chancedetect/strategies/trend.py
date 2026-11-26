@@ -19,6 +19,7 @@ class MaBullishAlignmentStrategy(BaseStrategy):
     id = "ma_bullish_alignment"
     name = "均线多头启动"
     category = "trend"
+    role = "entry"
     description = "短/中/长期均线呈多头排列，收盘价站上短期均线且短均线向上拐头，辅以成交量确认。"
     params_model = MaBullishParams
 
@@ -105,6 +106,7 @@ class VolumeHighBreakoutStrategy(BaseStrategy):
     id = "volume_high_breakout"
     name = "放量突破N日新高"
     category = "trend"
+    role = "entry"
     description = "收盘价有效突破过去 N 个交易日最高收盘价，同时成交量明显放大，捕捉趋势加速起点。"
     params_model = VolumeHighBreakoutParams
 
@@ -176,6 +178,7 @@ class MacdGoldenCrossStrategy(BaseStrategy):
     id = "macd_golden_cross"
     name = "MACD 金叉"
     category = "trend"
+    role = "entry"
     description = "DIF 上穿 DEA 形成 MACD 金叉，柱体由负转正；可选限定零轴上方强势区间。"
     params_model = MacdGoldenCrossParams
 
