@@ -7,6 +7,7 @@ import { Header } from './components/Header'
 import { OpportunityList } from './components/OpportunityList'
 import { PositionWorkspace } from './components/PositionWorkspace'
 import { ProductGuidePanel, type GuideNavigationTarget } from './components/ProductGuidePanel'
+import { SellPositionModal } from './components/SellPositionModal'
 import { StrategySidebar } from './components/StrategySidebar'
 import {
   applyScenarioTemplate,
@@ -101,6 +102,7 @@ export default function App() {
   const [buyModalOpen, setBuyModalOpen] = useState(false)
   const [buyPrefill, setBuyPrefill] = useState<BuyModalPrefill | null>(null)
   const [buyTargetPosition, setBuyTargetPosition] = useState<TrackedPositionRecord | null>(null)
+  const [sellTargetPosition, setSellTargetPosition] = useState<TrackedPositionRecord | null>(null)
   const [positionToast, setPositionToast] = useState<string | null>(null)
 
   const refreshHealth = useCallback(async () => {
@@ -207,22 +209,46 @@ export default function App() {
     setBuyModalOpen(true)
   }
 
-  const openAddLotModal = (position: TrackedPositionRecord) => {
+  const openAddBuyModal = (position: TrackedPositionRecord) => {
     setBuyPrefill(null)
     setBuyTargetPosition(position)
     setBuyModalOpen(true)
   }
 
+  const openSellModal = (position: TrackedPositionRecord) => {
+    setSellTargetPosition(position)
+  }
+
+  const openReentryBuyModal = (position: TrackedPositionRecord) => {
+    setBuyTargetPosition(null)
+    setBuyPrefill({
+      otc_code: position.otc_code,
+      otc_name: position.otc_name,
+      exchange_symbol: position.exchange_symbol,
+      exchange_name: position.proxy_fund?.name ?? null,
+    })
+    setBuyModalOpen(true)
+  }
+
+  const showPositionToast = (message: string, code: string) => {
+    setPositionToast(message)
+    window.setTimeout(() => {
+      setPositionToast((cur) => (cur && cur.includes(code) ? null : cur))
+    }, 4500)
+  }
+
   const handlePositionSaved = (pos: TrackedPositionRecord, mode: 'created' | 'lot_added') => {
     setPositionsRefreshKey((k) => k + 1)
     refreshPositionBadge()
-    const actionLabel = mode === 'created' ? '已记录新持仓' : '已追加交易批次'
-    setPositionToast(`${actionLabel}：${pos.otc_name} (${pos.otc_code})`)
-    window.setTimeout(() => {
-      setPositionToast((cur) =>
-        cur && cur.includes(pos.otc_code) ? null : cur,
-      )
-    }, 4500)
+    const actionLabel = mode === 'created' ? '已记录新持仓' : '已追加加仓批次'
+    showPositionToast(`${actionLabel}：${pos.otc_name} (${pos.otc_code})`, pos.otc_code)
+  }
+
+  const handleSellSaved = (pos: TrackedPositionRecord) => {
+    setPositionsRefreshKey((k) => k + 1)
+    refreshPositionBadge()
+    const actionLabel = pos.status === 'closed' ? '已清仓并归档复盘' : '已记录减仓卖出'
+    showPositionToast(`${actionLabel}：${pos.otc_name} (${pos.otc_code})`, pos.otc_code)
   }
 
   return (
@@ -288,8 +314,11 @@ export default function App() {
           <PositionWorkspace
             refreshKey={positionsRefreshKey}
             onOpenNewBuy={openNewBuyModal}
-            onOpenAddLot={openAddLotModal}
+            onOpenAddBuy={openAddBuyModal}
+            onOpenSell={openSellModal}
+            onOpenReentryBuy={openReentryBuyModal}
             onSelectFund={setSelectedSymbol}
+            onNavigateToGuide={handleNavigateToGuide}
             onSummaryChange={(s) => setPendingNavCount(s.pending_nav_count)}
           />
         )}
@@ -327,6 +356,15 @@ export default function App() {
         existingPosition={buyTargetPosition}
         onClose={() => setBuyModalOpen(false)}
         onSaved={handlePositionSaved}
+        onNavigateToGuide={handleNavigateToGuide}
+      />
+
+      <SellPositionModal
+        open={sellTargetPosition !== null}
+        position={sellTargetPosition}
+        onClose={() => setSellTargetPosition(null)}
+        onSaved={handleSellSaved}
+        onNavigateToGuide={handleNavigateToGuide}
       />
     </div>
   )

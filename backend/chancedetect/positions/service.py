@@ -22,6 +22,13 @@ from chancedetect.data.otc_nav_provider import (
     OTCNavProvider,
     OTCNavProviderError,
 )
+from chancedetect.positions.accounting import (
+    OversellError,
+    PositionAccountingResult,
+    compute_portfolio_summary,
+    evaluate_position_accounting,
+    sort_trade_lots,
+)
 from chancedetect.storage.bar_store import BarStore
 from chancedetect.storage.sqlite_store import (
     _UNSET,
@@ -320,26 +327,17 @@ class PositionService:
     def list_positions(self, *, status: str = "active") -> dict[str, Any]:
         if status not in ("active", "closed", "all"):
             raise InvalidPositionInputError("status must be one of: active, closed, all.")
-        positions = self.sqlite.list_positions(status=status)
-        serialized = self._serialize_positions(positions)
-
         all_positions = self.sqlite.list_positions(status="all")
-        all_lots_map = self.sqlite.list_trade_lots_for_positions([p.id for p in all_positions])
-        active_count = sum(1 for p in all_positions if p.status == "active")
-        closed_count = sum(1 for p in all_positions if p.status == "closed")
-        pending_nav_count = sum(
-            1
-            for lots in all_lots_map.values()
-            for lot in lots
-            if lot.nav_status == "pending"
-        )
+        all_serialized = self._serialize_positions(all_positions)
+        portfolio_summary = compute_portfolio_summary(all_serialized)
+        if status == "all":
+            filtered = all_serialized
+        else:
+            filtered = [p for p in all_serialized if p["status"] == status]
         return {
-            "positions": serialized,
-            "summary": {
-                "active_count": active_count,
-                "closed_count": closed_count,
-                "pending_nav_count": pending_nav_count,
-            },
+            "positions": filtered,
+            "summary": portfolio_summary,
+            "portfolio_summary": portfolio_summary,
         }
 
     def get_position(self, position_id: int) -> dict[str, Any] | None:
@@ -399,11 +397,36 @@ class PositionService:
         if pos is None:
             raise PositionNotFoundError(f"Position {position_id} not found")
 
+        if sell_ratio is not None and not (0.0 < float(sell_ratio) <= 1.0):
+            raise InvalidPositionInputError("sell_ratio must be in (0, 1].")
+        if fee < 0:
+            raise InvalidPositionInputError("fee must be non-negative.")
+
         eff_date = _validate_trade_date(trade_date) if trade_date else self.today_str()
         resolved_nav, nav_status = self._resolve_lot_nav(pos.otc_code, eff_date, manual_nav=nav)
         eff_amount, eff_shares = derive_amount_and_shares(
             side=side, nav=resolved_nav, amount=amount, shares=shares, fee=fee
         )
+        eff_sell_ratio = float(sell_ratio) if (side == "sell" and sell_ratio is not None) else None
+
+        existing_lots = self.sqlite.list_trade_lots(position_id)
+        ts = now_iso()
+        candidate_lot = TradeLotRecord(
+            id=max((item.id for item in existing_lots), default=0) + 1,
+            position_id=position_id,
+            side=side,
+            trade_date=eff_date,
+            nav=resolved_nav,
+            nav_status=nav_status,
+            amount=eff_amount,
+            shares=eff_shares,
+            sell_ratio=eff_sell_ratio,
+            fee=fee,
+            notes=notes,
+            created_at=ts,
+            updated_at=ts,
+        )
+        self._validate_candidate_lots(pos, [*existing_lots, candidate_lot])
 
         lot = self.sqlite.create_trade_lot(
             position_id=position_id,
@@ -413,11 +436,11 @@ class PositionService:
             nav_status=nav_status,
             amount=eff_amount,
             shares=eff_shares,
-            sell_ratio=sell_ratio if side == "sell" else None,
+            sell_ratio=eff_sell_ratio,
             fee=fee,
             notes=notes,
         )
-        self._sync_position_opened_date(position_id)
+        self._reconcile_position_lifecycle(position_id)
         serialized_pos = self.get_position(position_id)
         assert serialized_pos is not None
         serialized_lot = next(item for item in serialized_pos["lots"] if item["id"] == lot.id)
@@ -451,6 +474,8 @@ class PositionService:
             else _validate_trade_date(str(trade_date))
         )
         eff_fee = existing.fee if fee is _UNSET else float(fee)
+        if eff_fee < 0:
+            raise InvalidPositionInputError("fee must be non-negative.")
 
         # Determine NAV & nav_status transition
         if nav is not _UNSET:
@@ -492,6 +517,31 @@ class PositionService:
         eff_sell_ratio = existing.sell_ratio if sell_ratio is _UNSET else sell_ratio
         if eff_side == "buy":
             eff_sell_ratio = None
+        elif eff_sell_ratio is not None and not (0.0 < float(eff_sell_ratio) <= 1.0):
+            raise InvalidPositionInputError("sell_ratio must be in (0, 1].")
+
+        existing_lots = self.sqlite.list_trade_lots(position_id)
+        candidate_lots = [
+            (
+                lot.model_copy(
+                    update={
+                        "side": eff_side,
+                        "trade_date": eff_date,
+                        "nav": eff_nav,
+                        "nav_status": eff_nav_status,
+                        "amount": eff_amount,
+                        "shares": eff_shares,
+                        "sell_ratio": eff_sell_ratio,
+                        "fee": eff_fee,
+                        "notes": lot.notes if notes is _UNSET else notes,
+                    }
+                )
+                if lot.id == lot_id
+                else lot
+            )
+            for lot in existing_lots
+        ]
+        self._validate_candidate_lots(pos, candidate_lots)
 
         updated_lot = self.sqlite.update_trade_lot(
             position_id,
@@ -509,7 +559,7 @@ class PositionService:
         if updated_lot is None:
             raise TradeLotNotFoundError(f"Trade lot {lot_id} not found on position {position_id}")
 
-        self._sync_position_opened_date(position_id)
+        self._reconcile_position_lifecycle(position_id)
         serialized_pos = self.get_position(position_id)
         assert serialized_pos is not None
         serialized_lot = next(item for item in serialized_pos["lots"] if item["id"] == lot_id)
@@ -519,10 +569,17 @@ class PositionService:
         pos = self.sqlite.get_position(position_id)
         if pos is None:
             raise PositionNotFoundError(f"Position {position_id} not found")
+        existing_lots = self.sqlite.list_trade_lots(position_id)
+        if not any(lot.id == lot_id for lot in existing_lots):
+            raise TradeLotNotFoundError(f"Trade lot {lot_id} not found on position {position_id}")
+
+        remaining_lots = [lot for lot in existing_lots if lot.id != lot_id]
+        self._validate_candidate_lots(pos, remaining_lots)
+
         deleted = self.sqlite.delete_trade_lot(position_id, lot_id)
         if not deleted:
             raise TradeLotNotFoundError(f"Trade lot {lot_id} not found on position {position_id}")
-        self._sync_position_opened_date(position_id)
+        self._reconcile_position_lifecycle(position_id)
         serialized_pos = self.get_position(position_id)
         assert serialized_pos is not None
         return serialized_pos
@@ -583,6 +640,7 @@ class PositionService:
 
             # Backfill strictly `pending` lots (never touch `manual` or `confirmed`)
             pending_lots = self.sqlite.list_pending_trade_lots(otc_code=code)
+            affected_position_ids: set[int] = set()
             for lot, _ in pending_lots:
                 bar = self.sqlite.get_otc_nav_bar(code, lot.trade_date)
                 if bar is None:
@@ -602,7 +660,18 @@ class PositionService:
                     amount=eff_amount,
                     shares=eff_shares,
                 )
+                affected_position_ids.add(lot.position_id)
                 backfilled_lots += 1
+
+            for pid in sorted(affected_position_ids):
+                try:
+                    self._reconcile_position_lifecycle(pid)
+                except (ActivePositionExistsError, InvalidPositionInputError) as exc:
+                    logger.warning(
+                        "Lifecycle reconciliation skipped for position %s after NAV sync: %s",
+                        pid,
+                        exc,
+                    )
 
         if sync_error_rows:
             self.sqlite.record_sync_errors(run_id, sync_error_rows)
@@ -668,15 +737,48 @@ class PositionService:
             return bar.unit_nav, "confirmed"
         return None, "pending"
 
-    def _sync_position_opened_date(self, position_id: int) -> None:
-        lots = self.sqlite.list_trade_lots(position_id)
-        buy_dates = [lot.trade_date for lot in lots if lot.side == "buy"]
-        if not buy_dates:
-            return
-        earliest = min(buy_dates)
+    def _validate_candidate_lots(
+        self,
+        pos: TrackedPositionRecord,
+        candidate_lots: list[TradeLotRecord],
+    ) -> PositionAccountingResult:
+        latest_bar = self.sqlite.get_latest_otc_nav_bar(pos.otc_code)
+        try:
+            acct = evaluate_position_accounting(
+                candidate_lots,
+                latest_nav=latest_bar.unit_nav if latest_bar else None,
+                eval_date=self._today_fn(),
+                fallback_opened_date=pos.opened_date,
+            )
+        except (OversellError, ValueError) as exc:
+            raise InvalidPositionInputError(str(exc)) from exc
+
+        if pos.status == "closed" and not acct.is_closed:
+            existing_active = self.sqlite.get_active_position_by_otc_code(pos.otc_code)
+            if existing_active is not None and existing_active.id != pos.id:
+                raise ActivePositionExistsError(pos.otc_code, existing_active.id)
+        return acct
+
+    def _reconcile_position_lifecycle(self, position_id: int) -> None:
         pos = self.sqlite.get_position(position_id)
-        if pos is not None and pos.opened_date != earliest:
-            self.sqlite.update_position(position_id, opened_date=earliest)
+        if pos is None:
+            return
+        lots = self.sqlite.list_trade_lots(position_id)
+        acct = self._validate_candidate_lots(pos, lots)
+
+        target_status = "closed" if acct.is_closed else "active"
+        target_closed_date = acct.closed_date if acct.is_closed else None
+        target_opened_date = acct.opened_date or pos.opened_date
+
+        updates: dict[str, Any] = {}
+        if pos.status != target_status:
+            updates["status"] = target_status
+        if pos.closed_date != target_closed_date:
+            updates["closed_date"] = target_closed_date
+        if pos.opened_date != target_opened_date:
+            updates["opened_date"] = target_opened_date
+        if updates:
+            self.sqlite.update_position(position_id, **updates)
 
     def _load_latest_proxy_bars(
         self, symbols: list[str]
@@ -710,10 +812,12 @@ class PositionService:
         )
         proxy_symbols = [p.exchange_symbol for p in positions if p.exchange_symbol]
         latest_proxy_by_sym = self._load_latest_proxy_bars(proxy_symbols)
+        eval_date = self._today_fn()
 
         serialized: list[dict[str, Any]] = []
         for pos in positions:
-            lots = lots_by_pos.get(pos.id, [])
+            raw_lots = lots_by_pos.get(pos.id, [])
+            lots = sort_trade_lots(raw_lots)
             latest_bar: OTCNavBar | None = latest_nav_by_code.get(pos.otc_code)
             proxy_fund = (
                 self.sqlite.get_exchange_fund(pos.exchange_symbol)
@@ -726,9 +830,20 @@ class PositionService:
                 else None
             )
             pending_count = sum(1 for lot in lots if lot.nav_status == "pending")
+            acct = evaluate_position_accounting(
+                lots,
+                latest_nav=latest_bar.unit_nav if latest_bar else None,
+                eval_date=eval_date,
+                fallback_opened_date=pos.opened_date,
+            )
 
             serialized_lots = [
-                self._serialize_lot(lot, latest_bar=latest_bar, proxy_bar=proxy_bar)
+                self._serialize_lot(
+                    lot,
+                    latest_bar=latest_bar,
+                    proxy_bar=proxy_bar,
+                    acct=acct,
+                )
                 for lot in lots
             ]
 
@@ -753,6 +868,7 @@ class PositionService:
                     "status": pos.status,
                     "opened_date": pos.opened_date,
                     "closed_date": pos.closed_date,
+                    "holding_days": acct.holding_days,
                     "entry_signal_snapshot": pos.entry_signal_snapshot,
                     "notes": pos.notes,
                     "custom_stop_loss_pct": pos.custom_stop_loss_pct,
@@ -766,6 +882,21 @@ class PositionService:
                     "latest_proxy_close": proxy_bar["close"] if proxy_bar else None,
                     "latest_proxy_pct_chg": proxy_bar["pct_chg"] if proxy_bar else None,
                     "latest_proxy_date": proxy_bar["trade_date"] if proxy_bar else None,
+                    "has_amount_data": acct.has_amount_data,
+                    "avg_cost_nav": acct.avg_cost_nav,
+                    "remaining_shares": acct.remaining_shares,
+                    "remaining_ratio": acct.remaining_ratio,
+                    "invested_capital": acct.invested_capital,
+                    "total_bought_amount": acct.total_bought_amount,
+                    "total_sold_amount": acct.total_sold_amount,
+                    "total_fees": acct.total_fees,
+                    "realized_pnl": acct.realized_pnl,
+                    "realized_return_pct": acct.realized_return_pct,
+                    "unrealized_pnl": acct.unrealized_pnl,
+                    "unrealized_return_pct": acct.unrealized_return_pct,
+                    "total_pnl": acct.total_pnl,
+                    "total_return_pct": acct.total_return_pct,
+                    "fifo_fee_status": acct.fifo_fee_status.to_dict(),
                     "lot_count": len(lots),
                     "pending_lot_count": pending_count,
                     "has_pending_nav": pending_count > 0,
@@ -782,8 +913,10 @@ class PositionService:
         *,
         latest_bar: OTCNavBar | None,
         proxy_bar: dict[str, Any] | None,
+        acct: PositionAccountingResult,
     ) -> dict[str, Any]:
         is_pending = lot.nav_status == "pending"
+        fifo = acct.per_lot_fifo.get(lot.id)
         return {
             "id": lot.id,
             "position_id": lot.position_id,
@@ -793,6 +926,7 @@ class PositionService:
             "nav_status": lot.nav_status,
             "amount": lot.amount,
             "shares": lot.shares,
+            "effective_shares": acct.per_lot_effective_shares.get(lot.id),
             "sell_ratio": lot.sell_ratio,
             "fee": lot.fee,
             "notes": lot.notes,
@@ -801,6 +935,15 @@ class PositionService:
             "reference_proxy_pct_chg": (
                 proxy_bar["pct_chg"] if (is_pending and proxy_bar) else None
             ),
+            "realized_pnl": acct.per_lot_realized_pnl.get(lot.id),
+            "realized_return_pct": acct.per_lot_realized_return_pct.get(lot.id),
+            "fifo_remaining_ratio": fifo.remaining_ratio if fifo else None,
+            "fifo_remaining_lot_ratio": fifo.remaining_lot_ratio if fifo else None,
+            "fifo_remaining_shares": fifo.remaining_shares if fifo else None,
+            "holding_calendar_days": fifo.holding_calendar_days if fifo else None,
+            "is_fee_free": fifo.is_fee_free if fifo else None,
+            "days_until_fee_free": fifo.days_until_fee_free if fifo else None,
+            "fee_free_date": fifo.fee_free_date if fifo else None,
             "created_at": lot.created_at,
             "updated_at": lot.updated_at,
         }

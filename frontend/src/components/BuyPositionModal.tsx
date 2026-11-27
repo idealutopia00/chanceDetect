@@ -27,6 +27,7 @@ import {
   prevWeekday,
   weekdayLabel,
 } from '../utils/tradingDate'
+import { GlossaryTooltip } from './GlossaryTooltip'
 
 interface BuyPositionModalProps {
   open: boolean
@@ -34,6 +35,7 @@ interface BuyPositionModalProps {
   existingPosition?: TrackedPositionRecord | null
   onClose: () => void
   onSaved: (position: TrackedPositionRecord, mode: 'created' | 'lot_added') => void
+  onNavigateToGuide?: (anchorId: string) => void
 }
 
 const OTC_CODE_RE = /^\d{6}$/
@@ -44,6 +46,7 @@ export function BuyPositionModal({
   existingPosition,
   onClose,
   onSaved,
+  onNavigateToGuide,
 }: BuyPositionModalProps) {
   const shNow = useMemo(() => getShanghaiNow(), [open])
 
@@ -331,7 +334,7 @@ export function BuyPositionModal({
           <div>
             <h2 className="text-sm font-bold text-slate-100">
               {existingPosition
-                ? `记录交易批次 · ${existingPosition.otc_name}`
+                ? `加仓买入 · ${existingPosition.otc_name}`
                 : isAddingLot
                   ? '追加买入批次（已有持仓中记录）'
                   : '记录场外基金买入'}
@@ -697,7 +700,7 @@ export function BuyPositionModal({
 
           {/* Manual NAV Override + Pending NAV Indicator */}
           <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <label className="flex cursor-pointer items-center gap-2 text-slate-200">
                 <input
                   type="checkbox"
@@ -707,6 +710,10 @@ export function BuyPositionModal({
                 />
                 <span>手动指定成交净值（覆盖官方净值，不会被自动同步改写）</span>
               </label>
+              <GlossaryTooltip
+                termId="pending-nav"
+                onNavigateToGuide={onNavigateToGuide}
+              />
             </div>
 
             {useManualNav ? (

@@ -384,6 +384,29 @@ export interface EntrySignalSnapshot {
   [key: string]: unknown
 }
 
+export interface LotFifoStatus {
+  lot_id: number
+  trade_date: string
+  remaining_ratio: number
+  remaining_lot_ratio: number
+  remaining_shares: number | null
+  holding_calendar_days: number
+  is_fee_free: boolean
+  days_until_fee_free: number
+  fee_free_date: string
+}
+
+export interface FifoFeeStatus {
+  fee_free_ratio: number
+  penalized_ratio: number
+  all_fee_free: boolean
+  earliest_all_fee_free_date: string | null
+  days_until_all_fee_free: number
+  min_holding_days: number | null
+  max_holding_days: number | null
+  lots: LotFifoStatus[]
+}
+
 export interface TradeLotRecord {
   id: number
   position_id: number
@@ -393,12 +416,22 @@ export interface TradeLotRecord {
   nav_status: NavStatus
   amount: number | null
   shares: number | null
+  effective_shares: number | null
   sell_ratio: number | null
   fee: number
   notes: string
   reference_nav: number | null
   reference_nav_date: string | null
   reference_proxy_pct_chg: number | null
+  realized_pnl: number | null
+  realized_return_pct: number | null
+  fifo_remaining_ratio: number | null
+  fifo_remaining_lot_ratio: number | null
+  fifo_remaining_shares: number | null
+  holding_calendar_days: number | null
+  is_fee_free: boolean | null
+  days_until_fee_free: number | null
+  fee_free_date: string | null
   created_at: string
   updated_at: string
 }
@@ -412,6 +445,7 @@ export interface TrackedPositionRecord {
   status: PositionStatus
   opened_date: string
   closed_date: string | null
+  holding_days: number
   entry_signal_snapshot: EntrySignalSnapshot
   notes: string
   custom_stop_loss_pct: number | null
@@ -423,6 +457,21 @@ export interface TrackedPositionRecord {
   latest_proxy_close: number | null
   latest_proxy_pct_chg: number | null
   latest_proxy_date: string | null
+  has_amount_data: boolean
+  avg_cost_nav: number | null
+  remaining_shares: number | null
+  remaining_ratio: number
+  invested_capital: number | null
+  total_bought_amount: number | null
+  total_sold_amount: number | null
+  total_fees: number | null
+  realized_pnl: number | null
+  realized_return_pct: number | null
+  unrealized_pnl: number | null
+  unrealized_return_pct: number | null
+  total_pnl: number | null
+  total_return_pct: number | null
+  fifo_fee_status: FifoFeeStatus
   lot_count: number
   pending_lot_count: number
   has_pending_nav: boolean
@@ -435,11 +484,22 @@ export interface PositionsSummary {
   active_count: number
   closed_count: number
   pending_nav_count: number
+  closed_win_count: number
+  closed_evaluated_count: number
+  closed_win_rate_pct: number | null
+  closed_avg_return_pct: number | null
+  amount_position_count: number
+  active_amount_position_count: number
+  total_invested_capital: number | null
+  total_unrealized_pnl: number | null
+  total_realized_pnl: number | null
+  total_pnl: number | null
 }
 
 export interface PositionsListResponse {
   positions: TrackedPositionRecord[]
   summary: PositionsSummary
+  portfolio_summary: PositionsSummary
 }
 
 export interface OTCLookupItem {

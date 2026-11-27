@@ -318,6 +318,8 @@ def add_trade_lot(
         )
     except PositionNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ActivePositionExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except InvalidPositionInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"lot": lot, "position": pos}
@@ -346,6 +348,8 @@ def update_trade_lot(
         )
     except (PositionNotFoundError, TradeLotNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ActivePositionExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except InvalidPositionInputError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"lot": lot, "position": pos}
@@ -357,4 +361,8 @@ def delete_trade_lot(request: Request, position_id: int, lot_id: int) -> dict[st
         pos = _pos_svc(request).delete_trade_lot(position_id, lot_id)
     except (PositionNotFoundError, TradeLotNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ActivePositionExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidPositionInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"deleted": True, "id": lot_id, "position": pos}
