@@ -147,25 +147,49 @@ def ensure_extension_features(df: pl.DataFrame, *, preserve_order: bool = False)
     return out
 
 
+TREND_STAGE_THRESHOLDS: dict[str, dict[str, float]] = {
+    "overheated": {
+        "boll_pct_b_min": 0.85,
+        "bias20_z_min": 2.2,
+        "rsi14_min": 65.0,
+        "pos_60d_min": 85.0,
+    },
+    "oversold": {
+        "rsi14_max": 38.0,
+        "boll_pct_b_max": 0.15,
+        "bias20_z_max": -2.0,
+    },
+    "early": {
+        "drawup_60d_low_max": 15.0,
+        "rsi14_max": 62.0,
+        "boll_pct_b_max": 0.78,
+    },
+}
+
+
 def trend_stage_expr() -> pl.Expr:
     """Classify each (symbol, trade_date) row into volatility-normalized Trend Stage."""
+    ov = TREND_STAGE_THRESHOLDS["overheated"]
+    os_ = TREND_STAGE_THRESHOLDS["oversold"]
+    ea = TREND_STAGE_THRESHOLDS["early"]
+
     is_overheated = (
-        (pl.col("boll_pct_b") >= 0.85).fill_null(False)
-        | (pl.col("bias20_z") >= 2.2).fill_null(False)
+        (pl.col("boll_pct_b") >= ov["boll_pct_b_min"]).fill_null(False)
+        | (pl.col("bias20_z") >= ov["bias20_z_min"]).fill_null(False)
     ) & (
-        (pl.col("rsi14") >= 65.0).fill_null(False)
-        | (pl.col("pos_60d") >= 85.0).fill_null(False)
+        (pl.col("rsi14") >= ov["rsi14_min"]).fill_null(False)
+        | (pl.col("pos_60d") >= ov["pos_60d_min"]).fill_null(False)
     )
     is_oversold = (
-        (pl.col("rsi14") <= 38.0).fill_null(False)
-        | (pl.col("boll_pct_b") <= 0.15).fill_null(False)
-        | (pl.col("bias20_z") <= -2.0).fill_null(False)
+        (pl.col("rsi14") <= os_["rsi14_max"]).fill_null(False)
+        | (pl.col("boll_pct_b") <= os_["boll_pct_b_max"]).fill_null(False)
+        | (pl.col("bias20_z") <= os_["bias20_z_max"]).fill_null(False)
     )
     is_early = (
         (pl.col("ma20") >= pl.col("ma60")).fill_null(False)
-        & (pl.col("drawup_60d_low") <= 15.0).fill_null(False)
-        & (pl.col("rsi14") < 62.0).fill_null(False)
-        & (pl.col("boll_pct_b") < 0.78).fill_null(False)
+        & (pl.col("drawup_60d_low") <= ea["drawup_60d_low_max"]).fill_null(False)
+        & (pl.col("rsi14") < ea["rsi14_max"]).fill_null(False)
+        & (pl.col("boll_pct_b") < ea["boll_pct_b_max"]).fill_null(False)
     )
     return (
         pl.when(is_overheated)

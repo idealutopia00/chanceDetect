@@ -11,7 +11,9 @@ from rich.console import Console
 from rich.table import Table
 
 from chancedetect.config import get_settings
+from chancedetect.data.otc_nav_provider import OTCNavProvider
 from chancedetect.data.sync_service import SyncService
+from chancedetect.positions.service import PositionService
 from chancedetect.storage.bar_store import BarStore
 from chancedetect.storage.sqlite_store import SQLiteStore
 from chancedetect.strategies.engine import (
@@ -33,6 +35,44 @@ def _init_services() -> tuple[SQLiteStore, BarStore, SyncService, StrategyEngine
     sync_svc = SyncService(settings, sqlite, bars)
     engine = StrategyEngine(sqlite, bars)
     return sqlite, bars, sync_svc, engine
+
+
+def _init_position_service() -> PositionService:
+    settings = get_settings()
+    sqlite = SQLiteStore(settings.sqlite_path)
+    bars = BarStore(settings.daily_bars_path, settings.benchmarks_path, settings.features_path)
+    provider = OTCNavProvider(timeout=settings.request_timeout_sec)
+    return PositionService(sqlite, bars, provider)
+
+
+@app.command("sync-nav")
+def sync_nav(
+    otc_code: Annotated[
+        str | None,
+        typer.Option("--otc-code", "-c", help="Refresh only a specific tracked 6-digit OTC fund code"),
+    ] = None,
+) -> None:
+    """Refresh official OTC NAVs strictly for tracked positions and backfill Pending NAV lots."""
+    pos_svc = _init_position_service()
+    console.print("[cyan]Syncing official OTC NAVs for tracked positions...[/cyan]")
+    res = pos_svc.sync_tracked_otc_navs(otc_code=otc_code)
+
+    table = Table(title="OTC NAV Sync Summary")
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    table.add_row("Refreshed Tracked Funds", str(res["refreshed_funds"]))
+    table.add_row("Backfilled Pending NAV Lots", str(res["backfilled_lots"]))
+    table.add_row("Upserted NAV Bars", str(res["updated_bars"]))
+    table.add_row("Errors", str(len(res["errors"])))
+    console.print(table)
+
+    if res["errors"]:
+        err_table = Table(title="OTC NAV Sync Errors")
+        err_table.add_column("OTC Code")
+        err_table.add_column("Error")
+        for err in res["errors"]:
+            err_table.add_row(str(err["otc_code"]), str(err["error"]))
+        console.print(err_table)
 
 
 @app.command("sync-metadata")
@@ -241,6 +281,94 @@ def scan(
                 otcs,
             )
         console.print(watch_table)
+
+
+@app.command("positions")
+def positions_cmd(
+    show_all: Annotated[
+        bool,
+        typer.Option("--all", "-a", help="Include archived (closed) Tracked Positions"),
+    ] = False,
+) -> None:
+    """Display Tracked Positions with return %, 7-day FIFO fee status, and triggered Exit Signals."""
+    pos_svc = _init_position_service()
+    res = pos_svc.list_positions(status="all" if show_all else "active")
+    summary = res["portfolio_summary"]
+    items = res["positions"]
+
+    console.print(
+        f"[bold cyan]Tracked Positions:[/bold cyan] "
+        f"Active [bold]{summary['active_count']}[/bold]  "
+        f"Closed [bold]{summary['closed_count']}[/bold]  "
+        f"Exit Alerts [bold red]{summary.get('exit_alert_count', 0)}[/bold red] "
+        f"({summary.get('exit_alert_position_count', 0)} pos)  "
+        f"Pending NAV [bold yellow]{summary['pending_nav_count']}[/bold yellow]"
+    )
+
+    if not items:
+        console.print("[dim]No tracked positions found.[/dim]")
+        return
+
+    table = Table(title="Tracked Positions & Exit Signals")
+    table.add_column("ID", justify="right", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Code", no_wrap=True)
+    table.add_column("Name", overflow="ellipsis", max_width=14)
+    table.add_column("Proxy", no_wrap=True)
+    table.add_column("Opened", no_wrap=True)
+    table.add_column("Ret%", justify="right", no_wrap=True)
+    table.add_column("7d Fee", no_wrap=True)
+    table.add_column("Exit Signals")
+
+    for pos in items:
+        status_cell = (
+            "[green]ACTIVE[/green]" if pos["status"] == "active" else "[dim]CLOSED[/dim]"
+        )
+        opened = pos["opened_date"]
+        ret = pos.get("total_return_pct")
+        if ret is None:
+            ret_cell = "[dim]Pending[/dim]"
+        elif ret > 0:
+            ret_cell = f"[red]{ret:+.2f}%[/red]"
+        elif ret < 0:
+            ret_cell = f"[green]{ret:+.2f}%[/green]"
+        else:
+            ret_cell = f"{ret:+.2f}%"
+
+        fifo = pos.get("fifo_fee_status") or {}
+        if pos["status"] == "closed":
+            fee_cell = "[dim]-[/dim]"
+        elif fifo.get("all_fee_free"):
+            fee_cell = "[green]免1.5%[/green]"
+        else:
+            free_pct = round(float(fifo.get("fee_free_ratio", 0.0)) * 100.0)
+            days_left = fifo.get("days_until_all_fee_free", 0)
+            fee_cell = f"[yellow]{free_pct}%({days_left}d)[/yellow]"
+
+        triggered = [s for s in pos.get("exit_signals", []) if s.get("triggered")]
+        if pos["status"] == "closed":
+            sig_cell = "[dim]Archived[/dim]"
+        elif not triggered:
+            sig_cell = "[green]OK[/green]"
+        else:
+            parts: list[str] = []
+            for s in triggered:
+                color = "red" if s["severity"] == "alert" else "yellow"
+                parts.append(f"[{color}]{s['title']}[/{color}]")
+            sig_cell = ", ".join(parts)
+
+        table.add_row(
+            str(pos["id"]),
+            status_cell,
+            pos["otc_code"],
+            pos["otc_name"][:12],
+            pos["exchange_symbol"] or "-",
+            opened,
+            ret_cell,
+            fee_cell,
+            sig_cell,
+        )
+    console.print(table)
 
 
 @app.command("serve")

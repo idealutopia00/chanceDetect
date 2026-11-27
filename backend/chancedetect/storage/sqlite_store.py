@@ -11,17 +11,38 @@ from typing import Any
 
 from chancedetect.data.models import (
     ExchangeFund,
+    NavStatus,
     OTCFundMapping,
+    OTCFundMetadata,
+    OTCNavBar,
     ScanSnapshotRecord,
     StrategyPresetRecord,
     SyncErrorRecord,
     SyncRunRecord,
+    TrackedPositionRecord,
+    TradeLotRecord,
+    TradeSide,
     now_iso,
 )
 
 
 class UniverseDropProtectionError(RuntimeError):
     """Raised when a metadata refresh would drop an abnormally large share of mapped funds."""
+
+
+class ActivePositionExistsError(RuntimeError):
+    """Raised when attempting to create a second active Tracked Position for the same otc_code."""
+
+    def __init__(self, otc_code: str, existing_position_id: int | None = None) -> None:
+        self.otc_code = otc_code
+        self.existing_position_id = existing_position_id
+        msg = f"An active Tracked Position already exists for OTC fund {otc_code}."
+        if existing_position_id is not None:
+            msg += f" (position_id={existing_position_id})"
+        super().__init__(msg)
+
+
+_UNSET = object()
 
 
 SCHEMA_SQL = """
@@ -113,6 +134,70 @@ CREATE TABLE IF NOT EXISTS scan_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_scan_snapshots_trade_date ON scan_snapshots(trade_date DESC);
+
+CREATE TABLE IF NOT EXISTS tracked_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    otc_code TEXT NOT NULL,
+    otc_name TEXT NOT NULL DEFAULT '',
+    exchange_symbol TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'closed')),
+    opened_date TEXT NOT NULL,
+    closed_date TEXT,
+    entry_signal_snapshot_json TEXT NOT NULL DEFAULT '{}',
+    notes TEXT NOT NULL DEFAULT '',
+    custom_stop_loss_pct REAL,
+    custom_trailing_drawdown_pct REAL,
+    custom_take_profit_pct REAL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tracked_positions_one_active_per_otc
+    ON tracked_positions(otc_code)
+    WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_tracked_positions_status
+    ON tracked_positions(status, opened_date DESC, id DESC);
+
+CREATE TABLE IF NOT EXISTS trade_lots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    position_id INTEGER NOT NULL,
+    side TEXT NOT NULL CHECK (side IN ('buy', 'sell')),
+    trade_date TEXT NOT NULL,
+    nav REAL,
+    nav_status TEXT NOT NULL DEFAULT 'pending' CHECK (nav_status IN ('pending', 'confirmed', 'manual')),
+    amount REAL,
+    shares REAL,
+    sell_ratio REAL,
+    fee REAL NOT NULL DEFAULT 0.0,
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (position_id) REFERENCES tracked_positions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_lots_position_date
+    ON trade_lots(position_id, trade_date ASC, id ASC);
+CREATE INDEX IF NOT EXISTS idx_trade_lots_pending
+    ON trade_lots(nav_status, trade_date);
+
+CREATE TABLE IF NOT EXISTS otc_nav_bars (
+    otc_code TEXT NOT NULL,
+    nav_date TEXT NOT NULL,
+    unit_nav REAL NOT NULL,
+    accumulated_nav REAL,
+    daily_return_pct REAL,
+    dividend_note TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (otc_code, nav_date)
+);
+
+CREATE TABLE IF NOT EXISTS otc_fund_metadata (
+    otc_code TEXT PRIMARY KEY,
+    otc_name TEXT NOT NULL DEFAULT '',
+    last_nav_date TEXT,
+    last_synced_at TEXT,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -637,6 +722,577 @@ class SQLiteStore:
         )
 
     # ------------------------------------------------------------------
+    # Tracked Positions, Trade Lots, OTC NAV Bars & OTC Lookup
+    # ------------------------------------------------------------------
+
+    def get_otc_mapping_with_proxy(self, otc_code: str) -> dict[str, Any] | None:
+        """Return primary mapped OTC record and its linked ExchangeFund for an exact otc_code."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT om.*,
+                       ef.symbol AS ef_symbol, ef.code AS ef_code, ef.name AS ef_name,
+                       ef.fund_type AS ef_fund_type, ef.index_code AS ef_index_code,
+                       ef.index_name AS ef_index_name, ef.avg_amount_20d AS ef_avg_amount_20d
+                FROM otc_fund_mappings om
+                JOIN exchange_funds ef ON ef.symbol = om.exchange_symbol
+                WHERE om.otc_code = ? AND ef.is_active = 1
+                ORDER BY COALESCE(ef.avg_amount_20d, 0) DESC, ef.symbol ASC
+                LIMIT 1
+                """,
+                (otc_code,),
+            ).fetchone()
+        if not row:
+            return None
+        return self._row_to_otc_lookup_dict(row)
+
+    def search_otc_mappings(self, query: str = "", *, limit: int = 25) -> list[dict[str, Any]]:
+        """Search mapped OTC counterparts by OTC code/name or linked On-Exchange Proxy Fund."""
+        params: list[Any] = []
+        where = ["ef.is_active = 1"]
+        q = query.strip()
+        if q:
+            like = f"%{q}%"
+            where.append(
+                """(
+                    om.otc_code LIKE ? OR om.otc_name LIKE ?
+                    OR ef.symbol LIKE ? OR ef.code LIKE ? OR ef.name LIKE ?
+                    OR ef.index_code LIKE ? OR ef.index_name LIKE ?
+                )"""
+            )
+            params.extend([like] * 7)
+        where_sql = " AND ".join(where)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT om.*,
+                       ef.symbol AS ef_symbol, ef.code AS ef_code, ef.name AS ef_name,
+                       ef.fund_type AS ef_fund_type, ef.index_code AS ef_index_code,
+                       ef.index_name AS ef_index_name, ef.avg_amount_20d AS ef_avg_amount_20d
+                FROM otc_fund_mappings om
+                JOIN exchange_funds ef ON ef.symbol = om.exchange_symbol
+                WHERE {where_sql}
+                ORDER BY
+                    CASE WHEN om.otc_code = ? THEN 0 WHEN om.otc_code LIKE ? THEN 1 ELSE 2 END,
+                    CASE WHEN om.share_class = 'C' THEN 0 WHEN om.share_class = 'A' THEN 1 ELSE 2 END,
+                    COALESCE(ef.avg_amount_20d, 0) DESC,
+                    om.otc_code ASC
+                LIMIT ?
+                """,
+                [*params, q, f"{q}%", limit],
+            ).fetchall()
+        seen: set[str] = set()
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            code = row["otc_code"]
+            if code in seen:
+                continue
+            seen.add(code)
+            results.append(self._row_to_otc_lookup_dict(row))
+        return results
+
+    def get_exchange_fund_by_code(self, code: str) -> ExchangeFund | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM exchange_funds WHERE code = ? AND is_active = 1 LIMIT 1",
+                (code,),
+            ).fetchone()
+        return self._row_to_fund(row) if row else None
+
+    def create_position_with_initial_lot(
+        self,
+        *,
+        otc_code: str,
+        otc_name: str,
+        exchange_symbol: str | None,
+        opened_date: str,
+        entry_signal_snapshot: dict[str, Any],
+        notes: str,
+        custom_stop_loss_pct: float | None,
+        custom_trailing_drawdown_pct: float | None,
+        custom_take_profit_pct: float | None,
+        lot_trade_date: str,
+        lot_nav: float | None,
+        lot_nav_status: NavStatus,
+        lot_amount: float | None,
+        lot_shares: float | None,
+        lot_fee: float,
+        lot_notes: str,
+    ) -> tuple[TrackedPositionRecord, TradeLotRecord]:
+        ts = now_iso()
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM tracked_positions WHERE otc_code = ? AND status = 'active' LIMIT 1",
+                (otc_code,),
+            ).fetchone()
+            if existing is not None:
+                raise ActivePositionExistsError(otc_code, int(existing["id"]))
+
+            try:
+                cur_pos = conn.execute(
+                    """
+                    INSERT INTO tracked_positions (
+                        otc_code, otc_name, exchange_symbol, status, opened_date, closed_date,
+                        entry_signal_snapshot_json, notes,
+                        custom_stop_loss_pct, custom_trailing_drawdown_pct, custom_take_profit_pct,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        otc_code,
+                        otc_name,
+                        exchange_symbol,
+                        opened_date,
+                        json.dumps(entry_signal_snapshot, ensure_ascii=False),
+                        notes,
+                        custom_stop_loss_pct,
+                        custom_trailing_drawdown_pct,
+                        custom_take_profit_pct,
+                        ts,
+                        ts,
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                raise ActivePositionExistsError(otc_code) from exc
+
+            pos_id = int(cur_pos.lastrowid)
+            cur_lot = conn.execute(
+                """
+                INSERT INTO trade_lots (
+                    position_id, side, trade_date, nav, nav_status,
+                    amount, shares, sell_ratio, fee, notes, created_at, updated_at
+                ) VALUES (?, 'buy', ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                """,
+                (
+                    pos_id,
+                    lot_trade_date,
+                    lot_nav,
+                    lot_nav_status,
+                    lot_amount,
+                    lot_shares,
+                    lot_fee,
+                    lot_notes,
+                    ts,
+                    ts,
+                ),
+            )
+            lot_id = int(cur_lot.lastrowid)
+            pos_row = conn.execute("SELECT * FROM tracked_positions WHERE id = ?", (pos_id,)).fetchone()
+            lot_row = conn.execute("SELECT * FROM trade_lots WHERE id = ?", (lot_id,)).fetchone()
+        return self._row_to_position(pos_row), self._row_to_trade_lot(lot_row)
+
+    def list_positions(self, *, status: str = "active") -> list[TrackedPositionRecord]:
+        sql = "SELECT * FROM tracked_positions"
+        params: list[Any] = []
+        if status in ("active", "closed"):
+            sql += " WHERE status = ?"
+            params.append(status)
+        sql += " ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, opened_date DESC, id DESC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_position(r) for r in rows]
+
+    def get_position(self, position_id: int) -> TrackedPositionRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM tracked_positions WHERE id = ?",
+                (position_id,),
+            ).fetchone()
+        return self._row_to_position(row) if row else None
+
+    def get_active_position_by_otc_code(self, otc_code: str) -> TrackedPositionRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM tracked_positions WHERE otc_code = ? AND status = 'active' LIMIT 1",
+                (otc_code,),
+            ).fetchone()
+        return self._row_to_position(row) if row else None
+
+    def list_active_position_ids_by_otc(self) -> dict[str, int]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT otc_code, id FROM tracked_positions WHERE status = 'active'"
+            ).fetchall()
+        return {str(r["otc_code"]): int(r["id"]) for r in rows}
+
+    def update_position(
+        self,
+        position_id: int,
+        *,
+        otc_name: Any = _UNSET,
+        exchange_symbol: Any = _UNSET,
+        status: Any = _UNSET,
+        opened_date: Any = _UNSET,
+        closed_date: Any = _UNSET,
+        notes: Any = _UNSET,
+        custom_stop_loss_pct: Any = _UNSET,
+        custom_trailing_drawdown_pct: Any = _UNSET,
+        custom_take_profit_pct: Any = _UNSET,
+    ) -> TrackedPositionRecord | None:
+        updates: list[str] = []
+        params: list[Any] = []
+        fields = {
+            "otc_name": otc_name,
+            "exchange_symbol": exchange_symbol,
+            "status": status,
+            "opened_date": opened_date,
+            "closed_date": closed_date,
+            "notes": notes,
+            "custom_stop_loss_pct": custom_stop_loss_pct,
+            "custom_trailing_drawdown_pct": custom_trailing_drawdown_pct,
+            "custom_take_profit_pct": custom_take_profit_pct,
+        }
+        for col, val in fields.items():
+            if val is not _UNSET:
+                updates.append(f"{col} = ?")
+                params.append(val)
+        if not updates:
+            return self.get_position(position_id)
+        updates.append("updated_at = ?")
+        params.append(now_iso())
+        params.append(position_id)
+        with self._connect() as conn:
+            try:
+                cur = conn.execute(
+                    f"UPDATE tracked_positions SET {', '.join(updates)} WHERE id = ?",
+                    params,
+                )
+            except sqlite3.IntegrityError as exc:
+                pos = conn.execute(
+                    "SELECT otc_code FROM tracked_positions WHERE id = ?", (position_id,)
+                ).fetchone()
+                code = str(pos["otc_code"]) if pos else ""
+                raise ActivePositionExistsError(code) from exc
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM tracked_positions WHERE id = ?", (position_id,)
+            ).fetchone()
+        return self._row_to_position(row) if row else None
+
+    def delete_position(self, position_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM tracked_positions WHERE id = ?", (position_id,))
+            return cur.rowcount > 0
+
+    def list_trade_lots(self, position_id: int) -> list[TradeLotRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM trade_lots WHERE position_id = ? ORDER BY trade_date ASC, id ASC",
+                (position_id,),
+            ).fetchall()
+        return [self._row_to_trade_lot(r) for r in rows]
+
+    def list_trade_lots_for_positions(self, position_ids: list[int]) -> dict[int, list[TradeLotRecord]]:
+        if not position_ids:
+            return {}
+        placeholders = ",".join("?" for _ in position_ids)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM trade_lots
+                WHERE position_id IN ({placeholders})
+                ORDER BY trade_date ASC, id ASC
+                """,
+                position_ids,
+            ).fetchall()
+        grouped: dict[int, list[TradeLotRecord]] = {pid: [] for pid in position_ids}
+        for row in rows:
+            lot = self._row_to_trade_lot(row)
+            grouped.setdefault(lot.position_id, []).append(lot)
+        return grouped
+
+    def get_trade_lot(self, position_id: int, lot_id: int) -> TradeLotRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM trade_lots WHERE position_id = ? AND id = ?",
+                (position_id, lot_id),
+            ).fetchone()
+        return self._row_to_trade_lot(row) if row else None
+
+    def create_trade_lot(
+        self,
+        *,
+        position_id: int,
+        side: TradeSide,
+        trade_date: str,
+        nav: float | None,
+        nav_status: NavStatus,
+        amount: float | None,
+        shares: float | None,
+        sell_ratio: float | None,
+        fee: float,
+        notes: str,
+    ) -> TradeLotRecord:
+        ts = now_iso()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO trade_lots (
+                    position_id, side, trade_date, nav, nav_status,
+                    amount, shares, sell_ratio, fee, notes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    position_id,
+                    side,
+                    trade_date,
+                    nav,
+                    nav_status,
+                    amount,
+                    shares,
+                    sell_ratio,
+                    fee,
+                    notes,
+                    ts,
+                    ts,
+                ),
+            )
+            lot_id = int(cur.lastrowid)
+            row = conn.execute("SELECT * FROM trade_lots WHERE id = ?", (lot_id,)).fetchone()
+        return self._row_to_trade_lot(row)
+
+    def update_trade_lot(
+        self,
+        position_id: int,
+        lot_id: int,
+        *,
+        side: Any = _UNSET,
+        trade_date: Any = _UNSET,
+        nav: Any = _UNSET,
+        nav_status: Any = _UNSET,
+        amount: Any = _UNSET,
+        shares: Any = _UNSET,
+        sell_ratio: Any = _UNSET,
+        fee: Any = _UNSET,
+        notes: Any = _UNSET,
+    ) -> TradeLotRecord | None:
+        updates: list[str] = []
+        params: list[Any] = []
+        fields = {
+            "side": side,
+            "trade_date": trade_date,
+            "nav": nav,
+            "nav_status": nav_status,
+            "amount": amount,
+            "shares": shares,
+            "sell_ratio": sell_ratio,
+            "fee": fee,
+            "notes": notes,
+        }
+        for col, val in fields.items():
+            if val is not _UNSET:
+                updates.append(f"{col} = ?")
+                params.append(val)
+        if not updates:
+            return self.get_trade_lot(position_id, lot_id)
+        updates.append("updated_at = ?")
+        params.append(now_iso())
+        params.extend([position_id, lot_id])
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"UPDATE trade_lots SET {', '.join(updates)} WHERE position_id = ? AND id = ?",
+                params,
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM trade_lots WHERE position_id = ? AND id = ?",
+                (position_id, lot_id),
+            ).fetchone()
+        return self._row_to_trade_lot(row) if row else None
+
+    def delete_trade_lot(self, position_id: int, lot_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM trade_lots WHERE position_id = ? AND id = ?",
+                (position_id, lot_id),
+            )
+            return cur.rowcount > 0
+
+    def list_pending_trade_lots(self, *, otc_code: str | None = None) -> list[tuple[TradeLotRecord, str]]:
+        sql = """
+            SELECT tl.*, tp.otc_code AS pos_otc_code
+            FROM trade_lots tl
+            JOIN tracked_positions tp ON tp.id = tl.position_id
+            WHERE tl.nav_status = 'pending'
+        """
+        params: list[Any] = []
+        if otc_code is not None:
+            sql += " AND tp.otc_code = ?"
+            params.append(otc_code)
+        sql += " ORDER BY tl.trade_date ASC, tl.id ASC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [(self._row_to_trade_lot(r), str(r["pos_otc_code"])) for r in rows]
+
+    def has_stale_pending_lots(self, *, before_date: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM trade_lots WHERE nav_status = 'pending' AND trade_date < ? LIMIT 1",
+                (before_date,),
+            ).fetchone()
+        return row is not None
+
+    def list_tracked_otc_codes(self, *, closed_after_date: str | None = None) -> list[str]:
+        if closed_after_date is None:
+            sql = "SELECT DISTINCT otc_code FROM tracked_positions ORDER BY otc_code ASC"
+            params: list[Any] = []
+        else:
+            sql = """
+                SELECT DISTINCT tp.otc_code
+                FROM tracked_positions tp
+                WHERE tp.status = 'active'
+                   OR tp.closed_date IS NULL
+                   OR tp.closed_date >= ?
+                   OR EXISTS (
+                       SELECT 1 FROM trade_lots tl
+                       WHERE tl.position_id = tp.id AND tl.nav_status = 'pending'
+                   )
+                ORDER BY tp.otc_code ASC
+            """
+            params = [closed_after_date]
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [str(r["otc_code"]) for r in rows]
+
+    def backfill_missing_position_names(self, otc_code: str, otc_name: str) -> None:
+        if not otc_name:
+            return
+        placeholder = f"场外基金 {otc_code}"
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE tracked_positions
+                SET otc_name = ?, updated_at = ?
+                WHERE otc_code = ? AND (otc_name = '' OR otc_name = ?)
+                """,
+                (otc_name, now_iso(), otc_code, placeholder),
+            )
+
+    def upsert_otc_nav_bars(self, otc_code: str, bars: list[OTCNavBar]) -> int:
+        if not bars:
+            return 0
+        ts = now_iso()
+        with self._connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO otc_nav_bars (
+                    otc_code, nav_date, unit_nav, accumulated_nav,
+                    daily_return_pct, dividend_note, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(otc_code, nav_date) DO UPDATE SET
+                    unit_nav = excluded.unit_nav,
+                    accumulated_nav = COALESCE(excluded.accumulated_nav, otc_nav_bars.accumulated_nav),
+                    daily_return_pct = COALESCE(excluded.daily_return_pct, otc_nav_bars.daily_return_pct),
+                    dividend_note = excluded.dividend_note,
+                    updated_at = excluded.updated_at
+                """,
+                [
+                    (
+                        otc_code,
+                        b.nav_date,
+                        b.unit_nav,
+                        b.accumulated_nav,
+                        b.daily_return_pct,
+                        b.dividend_note,
+                        ts,
+                    )
+                    for b in bars
+                ],
+            )
+        return len(bars)
+
+    def get_otc_nav_bar(self, otc_code: str, nav_date: str) -> OTCNavBar | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM otc_nav_bars WHERE otc_code = ? AND nav_date = ?",
+                (otc_code, nav_date),
+            ).fetchone()
+        return self._row_to_otc_nav_bar(row) if row else None
+
+    def get_latest_otc_nav_bar(self, otc_code: str) -> OTCNavBar | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM otc_nav_bars WHERE otc_code = ? ORDER BY nav_date DESC LIMIT 1",
+                (otc_code,),
+            ).fetchone()
+        return self._row_to_otc_nav_bar(row) if row else None
+
+    def get_latest_otc_nav_bars(self, otc_codes: list[str]) -> dict[str, OTCNavBar]:
+        if not otc_codes:
+            return {}
+        placeholders = ",".join("?" for _ in otc_codes)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT b.*
+                FROM otc_nav_bars b
+                JOIN (
+                    SELECT otc_code, MAX(nav_date) AS max_date
+                    FROM otc_nav_bars
+                    WHERE otc_code IN ({placeholders})
+                    GROUP BY otc_code
+                ) m ON b.otc_code = m.otc_code AND b.nav_date = m.max_date
+                """,
+                otc_codes,
+            ).fetchall()
+        return {str(r["otc_code"]): self._row_to_otc_nav_bar(r) for r in rows}
+
+    def list_otc_nav_bars(
+        self, otc_code: str, *, start_date: str | None = None, end_date: str | None = None
+    ) -> list[OTCNavBar]:
+        sql = "SELECT * FROM otc_nav_bars WHERE otc_code = ?"
+        params: list[Any] = [otc_code]
+        if start_date:
+            sql += " AND nav_date >= ?"
+            params.append(start_date)
+        if end_date:
+            sql += " AND nav_date <= ?"
+            params.append(end_date)
+        sql += " ORDER BY nav_date ASC"
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._row_to_otc_nav_bar(r) for r in rows]
+
+    def upsert_otc_fund_metadata(
+        self,
+        otc_code: str,
+        *,
+        otc_name: str = "",
+        last_nav_date: str | None = None,
+        last_synced_at: str | None = None,
+    ) -> OTCFundMetadata:
+        ts = now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO otc_fund_metadata (
+                    otc_code, otc_name, last_nav_date, last_synced_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(otc_code) DO UPDATE SET
+                    otc_name = CASE WHEN excluded.otc_name != '' THEN excluded.otc_name ELSE otc_fund_metadata.otc_name END,
+                    last_nav_date = COALESCE(excluded.last_nav_date, otc_fund_metadata.last_nav_date),
+                    last_synced_at = COALESCE(excluded.last_synced_at, otc_fund_metadata.last_synced_at),
+                    updated_at = excluded.updated_at
+                """,
+                (otc_code, otc_name, last_nav_date, last_synced_at, ts),
+            )
+            row = conn.execute(
+                "SELECT * FROM otc_fund_metadata WHERE otc_code = ?",
+                (otc_code,),
+            ).fetchone()
+        return self._row_to_otc_metadata(row)
+
+    def get_otc_fund_metadata(self, otc_code: str) -> OTCFundMetadata | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM otc_fund_metadata WHERE otc_code = ?",
+                (otc_code,),
+            ).fetchone()
+        return self._row_to_otc_metadata(row) if row else None
+
+    # ------------------------------------------------------------------
     # Row Mappers
     # ------------------------------------------------------------------
 
@@ -683,3 +1339,82 @@ class SQLiteStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    @staticmethod
+    def _row_to_position(row: sqlite3.Row) -> TrackedPositionRecord:
+        return TrackedPositionRecord(
+            id=int(row["id"]),
+            otc_code=row["otc_code"],
+            otc_name=row["otc_name"],
+            exchange_symbol=row["exchange_symbol"],
+            status=row["status"],
+            opened_date=row["opened_date"],
+            closed_date=row["closed_date"],
+            entry_signal_snapshot=json.loads(row["entry_signal_snapshot_json"] or "{}"),
+            notes=row["notes"],
+            custom_stop_loss_pct=row["custom_stop_loss_pct"],
+            custom_trailing_drawdown_pct=row["custom_trailing_drawdown_pct"],
+            custom_take_profit_pct=row["custom_take_profit_pct"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_trade_lot(row: sqlite3.Row) -> TradeLotRecord:
+        return TradeLotRecord(
+            id=int(row["id"]),
+            position_id=int(row["position_id"]),
+            side=row["side"],
+            trade_date=row["trade_date"],
+            nav=row["nav"],
+            nav_status=row["nav_status"],
+            amount=row["amount"],
+            shares=row["shares"],
+            sell_ratio=row["sell_ratio"],
+            fee=float(row["fee"] or 0.0),
+            notes=row["notes"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_otc_nav_bar(row: sqlite3.Row) -> OTCNavBar:
+        return OTCNavBar(
+            otc_code=row["otc_code"],
+            nav_date=row["nav_date"],
+            unit_nav=float(row["unit_nav"]),
+            accumulated_nav=row["accumulated_nav"],
+            daily_return_pct=row["daily_return_pct"],
+            dividend_note=row["dividend_note"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_otc_metadata(row: sqlite3.Row) -> OTCFundMetadata:
+        return OTCFundMetadata(
+            otc_code=row["otc_code"],
+            otc_name=row["otc_name"],
+            last_nav_date=row["last_nav_date"],
+            last_synced_at=row["last_synced_at"],
+            updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_otc_lookup_dict(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "otc_code": row["otc_code"],
+            "otc_name": row["otc_name"],
+            "share_class": row["share_class"],
+            "mapping_type": row["mapping_type"],
+            "purchase_status": row["purchase_status"],
+            "fee_rate": row["fee_rate"],
+            "is_mapped": True,
+            "suggested_proxy": {
+                "symbol": row["ef_symbol"],
+                "code": row["ef_code"],
+                "name": row["ef_name"],
+                "fund_type": row["ef_fund_type"],
+                "index_code": row["ef_index_code"],
+                "index_name": row["ef_index_name"],
+            },
+        }

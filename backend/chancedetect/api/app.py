@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import date
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,9 @@ from fastapi.staticfiles import StaticFiles
 
 from chancedetect.api.routes import router as api_router
 from chancedetect.config import Settings, get_settings
+from chancedetect.data.otc_nav_provider import OTCNavProvider
 from chancedetect.data.sync_service import SyncService
+from chancedetect.positions.service import PositionService
 from chancedetect.scheduler.jobs import AppScheduler
 from chancedetect.storage.bar_store import BarStore
 from chancedetect.storage.sqlite_store import SQLiteStore
@@ -23,7 +26,12 @@ from chancedetect.strategies.engine import StrategyEngine
 logger = logging.getLogger(__name__)
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    otc_nav_provider: OTCNavProvider | None = None,
+    today_fn: Callable[[], date] | None = None,
+) -> FastAPI:
     cfg = settings or get_settings()
     cfg.ensure_dirs()
 
@@ -31,13 +39,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     bar_store = BarStore(cfg.daily_bars_path, cfg.benchmarks_path, cfg.features_path)
     sync_service = SyncService(cfg, sqlite_store, bar_store)
     strategy_engine = StrategyEngine(sqlite_store, bar_store)
-    scheduler = AppScheduler(cfg, sqlite_store, bar_store, sync_service)
+    nav_provider = otc_nav_provider or OTCNavProvider(timeout=cfg.request_timeout_sec)
+    position_service = PositionService(
+        sqlite_store,
+        bar_store,
+        nav_provider,
+        today_fn=today_fn,
+    )
+    scheduler = AppScheduler(
+        cfg,
+        sqlite_store,
+        bar_store,
+        sync_service,
+        position_service=position_service,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         scheduler.start()
         if cfg.enable_scheduler:
-            # Non-blocking startup catch-up check for missed EOD syncs after Mac sleep
+            # Non-blocking startup catch-up check for missed EOD syncs & stale Pending NAVs
             threading.Thread(
                 target=scheduler.check_and_catchup,
                 name="startup-catchup",
@@ -47,6 +68,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             yield
         finally:
             scheduler.shutdown()
+            if otc_nav_provider is None:
+                nav_provider.close()
 
     app = FastAPI(
         title="ChanceDetect",
@@ -60,6 +83,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.bar_store = bar_store
     app.state.sync_service = sync_service
     app.state.strategy_engine = strategy_engine
+    app.state.otc_nav_provider = nav_provider
+    app.state.position_service = position_service
     app.state.scheduler = scheduler
 
     app.add_middleware(

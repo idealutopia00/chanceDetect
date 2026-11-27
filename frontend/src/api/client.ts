@@ -1,12 +1,22 @@
 import type {
   ExchangeFundInfo,
   FundReplayResponse,
+  GuideMetadataResponse,
   HealthResponse,
+  OTCLookupResponse,
+  PositionCreatePayload,
+  PositionsListResponse,
+  PositionUpdatePayload,
   PresetRecord,
   ScanRequestConfig,
   ScanResponse,
   StrategyMeta,
+  SyncNavResponse,
   SyncStatusResponse,
+  TrackedPositionRecord,
+  TradeLotCreatePayload,
+  TradeLotRecord,
+  TradeLotUpdatePayload,
 } from '../types'
 
 const BASE = '/api/v1'
@@ -33,6 +43,8 @@ export const api = {
   health: () => request<HealthResponse>('/health'),
 
   listStrategies: () => request<{ strategies: StrategyMeta[] }>('/strategies'),
+
+  guideMetadata: () => request<GuideMetadataResponse>('/guide/metadata'),
 
   scan: (config: ScanRequestConfig) =>
     request<ScanResponse>('/scan', {
@@ -71,5 +83,67 @@ export const api = {
     request<{ accepted: boolean; mode: string }>('/sync/trigger', {
       method: 'POST',
       body: JSON.stringify({ mode, full_refresh_bars: fullRefreshBars }),
+    }),
+
+  lookupOtc: (q: string, limit = 25) => {
+    const params = new URLSearchParams({ q, limit: String(limit) })
+    return request<OTCLookupResponse>(`/otc/lookup?${params.toString()}`)
+  },
+
+  listPositions: (status: 'active' | 'closed' | 'all' = 'active') =>
+    request<PositionsListResponse>(`/positions?status=${encodeURIComponent(status)}`),
+
+  getPosition: (positionId: number, postExitDays = 40) =>
+    request<{ position: TrackedPositionRecord }>(
+      `/positions/${positionId}?post_exit_days=${encodeURIComponent(String(postExitDays))}`,
+    ),
+
+  createPosition: (payload: PositionCreatePayload) =>
+    request<{ position: TrackedPositionRecord }>('/positions', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  updatePosition: (positionId: number, payload: PositionUpdatePayload) =>
+    request<{ position: TrackedPositionRecord }>(`/positions/${positionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+
+  deletePosition: (positionId: number) =>
+    request<{ deleted: boolean; id: number }>(`/positions/${positionId}`, {
+      method: 'DELETE',
+    }),
+
+  addTradeLot: (positionId: number, payload: TradeLotCreatePayload) =>
+    request<{ lot: TradeLotRecord; position: TrackedPositionRecord }>(
+      `/positions/${positionId}/lots`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  updateTradeLot: (positionId: number, lotId: number, payload: TradeLotUpdatePayload) =>
+    request<{ lot: TradeLotRecord; position: TrackedPositionRecord }>(
+      `/positions/${positionId}/lots/${lotId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      },
+    ),
+
+  deleteTradeLot: (positionId: number, lotId: number) =>
+    request<{ deleted: boolean; id: number; position: TrackedPositionRecord }>(
+      `/positions/${positionId}/lots/${lotId}`,
+      {
+        method: 'DELETE',
+      },
+    ),
+
+  syncPositionNavs: (otcCode?: string) =>
+    request<SyncNavResponse>('/positions/sync-nav', {
+      method: 'POST',
+      body: JSON.stringify(otcCode ? { otc_code: otcCode } : {}),
     }),
 }

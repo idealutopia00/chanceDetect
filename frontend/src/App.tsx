@@ -1,21 +1,30 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api } from './api/client'
+import { BuyPositionModal } from './components/BuyPositionModal'
 import { DataSyncPanel } from './components/DataSyncPanel'
 import { FundReplayModal } from './components/FundReplayModal'
 import { Header } from './components/Header'
 import { OpportunityList } from './components/OpportunityList'
+import { PositionWorkspace } from './components/PositionWorkspace'
+import { ProductGuidePanel, type GuideNavigationTarget } from './components/ProductGuidePanel'
+import { SellPositionModal } from './components/SellPositionModal'
 import { StrategySidebar } from './components/StrategySidebar'
 import {
   applyScenarioTemplate,
   DEFAULT_SCENARIO_TEMPLATE,
+  matchActiveTemplateId,
+  SCENARIO_TEMPLATES,
   type ScenarioTemplate,
 } from './config/scenarioTemplates'
 import type {
+  AppTab,
+  BuyModalPrefill,
   HealthResponse,
   PresetRecord,
   ScanRequestConfig,
   ScanResponse,
   StrategyMeta,
+  TrackedPositionRecord,
 } from './types'
 
 function buildDefaultConfig(strategies: StrategyMeta[]): ScanRequestConfig {
@@ -66,7 +75,8 @@ function normalizePresetConfig(
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'scanner' | 'data'>('scanner')
+  const [activeTab, setActiveTab] = useState<AppTab>('scanner')
+  const [guideTarget, setGuideTarget] = useState<GuideNavigationTarget | null>(null)
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [strategies, setStrategies] = useState<StrategyMeta[]>([])
   const [presets, setPresets] = useState<PresetRecord[]>([])
@@ -76,6 +86,26 @@ export default function App() {
   const [scanError, setScanError] = useState<string | null>(null)
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
 
+  const handleNavigateToGuide = useCallback((anchorId: string) => {
+    setSelectedSymbol(null)
+    setActiveTab('guide')
+    setGuideTarget({ anchorId, seq: Date.now() })
+  }, [])
+
+  const handleGuideAnchorHandled = useCallback(() => {
+    setGuideTarget(null)
+  }, [])
+
+  // Position tracking modal & header badge state
+  const [pendingNavCount, setPendingNavCount] = useState(0)
+  const [exitAlertCount, setExitAlertCount] = useState(0)
+  const [positionsRefreshKey, setPositionsRefreshKey] = useState(0)
+  const [buyModalOpen, setBuyModalOpen] = useState(false)
+  const [buyPrefill, setBuyPrefill] = useState<BuyModalPrefill | null>(null)
+  const [buyTargetPosition, setBuyTargetPosition] = useState<TrackedPositionRecord | null>(null)
+  const [sellTargetPosition, setSellTargetPosition] = useState<TrackedPositionRecord | null>(null)
+  const [positionToast, setPositionToast] = useState<string | null>(null)
+
   const refreshHealth = useCallback(async () => {
     try {
       const h = await api.health()
@@ -83,6 +113,17 @@ export default function App() {
       return h
     } catch {
       return null
+    }
+  }, [])
+
+  const refreshPositionBadge = useCallback(async () => {
+    try {
+      const res = await api.listPositions('active')
+      const sum = res.portfolio_summary ?? res.summary
+      setPendingNavCount(sum.pending_nav_count)
+      setExitAlertCount(sum.exit_alert_count ?? 0)
+    } catch {
+      // ignore initial position count fetch errors
     }
   }, [])
 
@@ -102,15 +143,21 @@ export default function App() {
   useEffect(() => {
     let active = true
     async function bootstrap() {
-      const [h, sRes, pRes] = await Promise.all([
+      const [h, sRes, pRes, posRes] = await Promise.all([
         api.health().catch(() => null),
         api.listStrategies(),
         api.listPresets().catch(() => ({ presets: [] })),
+        api.listPositions('active').catch(() => null),
       ])
       if (!active) return
       setHealth(h)
       setStrategies(sRes.strategies)
       setPresets(pRes.presets)
+      if (posRes) {
+        const sum = posRes.portfolio_summary ?? posRes.summary
+        setPendingNavCount(sum.pending_nav_count)
+        setExitAlertCount(sum.exit_alert_count ?? 0)
+      }
       const initialCfg = buildDefaultConfig(sRes.strategies)
       setConfig(initialCfg)
       if (h && h.storage.daily_bars_rows > 0) {
@@ -122,6 +169,13 @@ export default function App() {
       active = false
     }
   }, [runScan])
+
+  const activeTemplateName = useMemo(() => {
+    if (!config || strategies.length === 0) return null
+    const id = matchActiveTemplateId(config, strategies)
+    if (!id) return null
+    return SCENARIO_TEMPLATES.find((t) => t.id === id)?.name ?? null
+  }, [config, strategies])
 
   const handleSavePreset = async (name: string, description: string) => {
     if (!config) return
@@ -148,9 +202,89 @@ export default function App() {
     runScan(next)
   }
 
+  const openBuyFromScanner = (prefill: BuyModalPrefill) => {
+    setBuyTargetPosition(null)
+    setBuyPrefill(prefill)
+    setBuyModalOpen(true)
+  }
+
+  const openNewBuyModal = () => {
+    setBuyTargetPosition(null)
+    setBuyPrefill(null)
+    setBuyModalOpen(true)
+  }
+
+  const openAddBuyModal = (position: TrackedPositionRecord) => {
+    setBuyPrefill(null)
+    setBuyTargetPosition(position)
+    setBuyModalOpen(true)
+  }
+
+  const openSellModal = (position: TrackedPositionRecord) => {
+    setSellTargetPosition(position)
+  }
+
+  const openReentryBuyModal = (position: TrackedPositionRecord) => {
+    setBuyTargetPosition(null)
+    setBuyPrefill({
+      otc_code: position.otc_code,
+      otc_name: position.otc_name,
+      exchange_symbol: position.exchange_symbol,
+      exchange_name: position.proxy_fund?.name ?? null,
+    })
+    setBuyModalOpen(true)
+  }
+
+  const showPositionToast = (message: string, code: string) => {
+    setPositionToast(message)
+    window.setTimeout(() => {
+      setPositionToast((cur) => (cur && cur.includes(code) ? null : cur))
+    }, 4500)
+  }
+
+  const handlePositionSaved = (pos: TrackedPositionRecord, mode: 'created' | 'lot_added') => {
+    setPositionsRefreshKey((k) => k + 1)
+    refreshPositionBadge()
+    const actionLabel = mode === 'created' ? '已记录新持仓' : '已追加加仓批次'
+    showPositionToast(`${actionLabel}：${pos.otc_name} (${pos.otc_code})`, pos.otc_code)
+  }
+
+  const handleSellSaved = (pos: TrackedPositionRecord) => {
+    setPositionsRefreshKey((k) => k + 1)
+    refreshPositionBadge()
+    const actionLabel = pos.status === 'closed' ? '已清仓并归档复盘' : '已记录减仓卖出'
+    showPositionToast(`${actionLabel}：${pos.otc_name} (${pos.otc_code})`, pos.otc_code)
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
-      <Header activeTab={activeTab} onTabChange={setActiveTab} health={health} />
+      <Header
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        health={health}
+        pendingNavCount={pendingNavCount}
+        exitAlertCount={exitAlertCount}
+      />
+
+      {positionToast && (
+        <div className="mx-auto mt-3 max-w-[1600px] px-4 sm:px-6">
+          <div className="flex items-center justify-between rounded-xl border border-emerald-500/40 bg-emerald-950/40 px-4 py-2 text-xs text-emerald-200">
+            <span>{positionToast}</span>
+            {activeTab !== 'positions' && (
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('positions')
+                  setPositionToast(null)
+                }}
+                className="font-semibold text-amber-300 underline underline-offset-2 hover:text-amber-200"
+              >
+                前往持仓复盘查看 →
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <main className="mx-auto max-w-[1600px] px-4 py-5 sm:px-6">
         {activeTab === 'scanner' && config && (
@@ -166,6 +300,7 @@ export default function App() {
               onSavePreset={handleSavePreset}
               onDeletePreset={handleDeletePreset}
               onLoadPreset={handleLoadPreset}
+              onNavigateToGuide={handleNavigateToGuide}
             />
             <section className="min-w-0 flex-1">
               <OpportunityList
@@ -173,9 +308,35 @@ export default function App() {
                 loading={scanning}
                 error={scanError}
                 onSelectFund={setSelectedSymbol}
+                onNavigateToGuide={handleNavigateToGuide}
+                onRecordBuy={openBuyFromScanner}
+                activeTemplateName={activeTemplateName}
               />
             </section>
           </div>
+        )}
+
+        {activeTab === 'positions' && (
+          <PositionWorkspace
+            refreshKey={positionsRefreshKey}
+            onOpenNewBuy={openNewBuyModal}
+            onOpenAddBuy={openAddBuyModal}
+            onOpenSell={openSellModal}
+            onOpenReentryBuy={openReentryBuyModal}
+            onSelectFund={setSelectedSymbol}
+            onNavigateToGuide={handleNavigateToGuide}
+            onSummaryChange={(s) => {
+              setPendingNavCount(s.pending_nav_count)
+              setExitAlertCount(s.exit_alert_count ?? 0)
+            }}
+          />
+        )}
+
+        {activeTab === 'guide' && (
+          <ProductGuidePanel
+            targetAnchor={guideTarget}
+            onAnchorHandled={handleGuideAnchorHandled}
+          />
         )}
 
         {activeTab === 'data' && (
@@ -194,8 +355,26 @@ export default function App() {
           symbol={selectedSymbol}
           config={config}
           onClose={() => setSelectedSymbol(null)}
+          onNavigateToGuide={handleNavigateToGuide}
         />
       )}
+
+      <BuyPositionModal
+        open={buyModalOpen}
+        prefill={buyPrefill}
+        existingPosition={buyTargetPosition}
+        onClose={() => setBuyModalOpen(false)}
+        onSaved={handlePositionSaved}
+        onNavigateToGuide={handleNavigateToGuide}
+      />
+
+      <SellPositionModal
+        open={sellTargetPosition !== null}
+        position={sellTargetPosition}
+        onClose={() => setSellTargetPosition(null)}
+        onSaved={handleSellSaved}
+        onNavigateToGuide={handleNavigateToGuide}
+      />
     </div>
   )
 }

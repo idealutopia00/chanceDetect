@@ -57,3 +57,21 @@ _Avoid_: Entry day, purchase day
 **Holding Horizon**:
 The number of trading days elapsed after the **Execution Date (T+1)** used to measure historical forward return and drawdown, aligned to avoid the 7-calendar-day short-term redemption penalty.
 _Avoid_: Lookahead window, backtest period
+
+### Position Tracking & Review
+
+**Tracked Position**:
+A single holding lifecycle—from initial subscription through full redemption—for an off-exchange mutual fund (typically an **OTC Counterpart** linked to an **On-Exchange Proxy Fund**), tracking dual performance curves, cost basis, and review notes.
+_Avoid_: Holding, portfolio item, position record
+
+**Trade Lot**:
+An individual buy or sell event within a **Tracked Position**, recording its execution date, official or **Pending NAV**, optional amount or shares, and optional fee.
+_Avoid_: Order, transaction, entry
+
+**Pending NAV**:
+An unconfirmed execution net asset value on a **Trade Lot** recorded before the official closing NAV for that trade date has been published, automatically backfilled on subsequent sync or manually overridden by the investor.
+_Avoid_: Estimated NAV, placeholder price, unconfirmed price
+
+**Exit Signal**:
+An explainable risk or take-profit alert evaluated on an active **Tracked Position**, combining its linked **On-Exchange Proxy Fund** technical state (`MA20` break, **Trend Stage** overheating) with position drawdown, cost stop-loss, and the 7-calendar-day short-term redemption threshold.
+_Avoid_: Sell trigger, stop order, alert rule

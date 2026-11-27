@@ -10,6 +10,9 @@ from pydantic import BaseModel, Field
 FundType = Literal["ETF", "LOF"]
 ShareClass = Literal["A", "C", "E", "I", "OTHER"]
 MappingType = Literal["FEEDER", "LOF_SELF", "LOF_SIBLING"]
+PositionStatus = Literal["active", "closed"]
+TradeSide = Literal["buy", "sell"]
+NavStatus = Literal["pending", "confirmed", "manual"]
 
 
 class ExchangeFund(BaseModel):
@@ -102,6 +105,65 @@ class ScanSnapshotRecord(BaseModel):
     elapsed_ms: float
     result: dict[str, Any]
     created_at: str | None = None
+
+
+class TrackedPositionRecord(BaseModel):
+    """A single holding lifecycle (Tracked Position) for an off-exchange mutual fund."""
+
+    id: int
+    otc_code: str
+    otc_name: str = ""
+    exchange_symbol: str | None = None
+    status: PositionStatus = "active"
+    opened_date: str
+    closed_date: str | None = None
+    entry_signal_snapshot: dict[str, Any] = Field(default_factory=dict)
+    notes: str = ""
+    custom_stop_loss_pct: float | None = None
+    custom_trailing_drawdown_pct: float | None = None
+    custom_take_profit_pct: float | None = None
+    created_at: str
+    updated_at: str
+
+
+class TradeLotRecord(BaseModel):
+    """An individual buy or sell event (Trade Lot) within a Tracked Position."""
+
+    id: int
+    position_id: int
+    side: TradeSide
+    trade_date: str
+    nav: float | None = None
+    nav_status: NavStatus = "pending"
+    amount: float | None = None
+    shares: float | None = None
+    sell_ratio: float | None = None
+    fee: float = 0.0
+    notes: str = ""
+    created_at: str
+    updated_at: str
+
+
+class OTCNavBar(BaseModel):
+    """Official daily net asset value bar for a tracked off-exchange mutual fund."""
+
+    otc_code: str
+    nav_date: str
+    unit_nav: float
+    accumulated_nav: float | None = None
+    daily_return_pct: float | None = None
+    dividend_note: str = ""
+    updated_at: str | None = None
+
+
+class OTCFundMetadata(BaseModel):
+    """Lightweight cached metadata for arbitrary 6-digit off-exchange fund codes."""
+
+    otc_code: str
+    otc_name: str = ""
+    last_nav_date: str | None = None
+    last_synced_at: str | None = None
+    updated_at: str | None = None
 
 
 def now_iso() -> str:
