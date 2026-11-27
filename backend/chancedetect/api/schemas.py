@@ -27,6 +27,14 @@ class ReplayRequest(BaseModel):
     lookback_days: int = Field(default=500, ge=60, le=2000)
 
 
+def _normalize_negative_pct_threshold(v: float | None) -> float | None:
+    if v is None:
+        return None
+    if v == 0:
+        raise ValueError("Threshold magnitude must be non-zero")
+    return -abs(float(v))
+
+
 class PositionCreateRequest(BaseModel):
     otc_code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$")
     otc_name: str | None = Field(default=None, max_length=120)
@@ -43,14 +51,9 @@ class PositionCreateRequest(BaseModel):
     custom_trailing_drawdown_pct: float | None = Field(default=None, ge=-99.0, le=99.0)
     custom_take_profit_pct: float | None = Field(default=None, gt=0.0, le=1000.0)
 
-    @field_validator("custom_stop_loss_pct", "custom_trailing_drawdown_pct")
-    @classmethod
-    def _normalize_negative_threshold(cls, v: float | None) -> float | None:
-        if v is None:
-            return None
-        if v == 0:
-            raise ValueError("Threshold magnitude must be non-zero")
-        return -abs(float(v))
+    _normalize_thresholds = field_validator(
+        "custom_stop_loss_pct", "custom_trailing_drawdown_pct"
+    )(_normalize_negative_pct_threshold)
 
 
 class PositionUpdateRequest(BaseModel):
@@ -61,14 +64,9 @@ class PositionUpdateRequest(BaseModel):
     custom_trailing_drawdown_pct: float | None = Field(default=None, ge=-99.0, le=99.0)
     custom_take_profit_pct: float | None = Field(default=None, gt=0.0, le=1000.0)
 
-    @field_validator("custom_stop_loss_pct", "custom_trailing_drawdown_pct")
-    @classmethod
-    def _normalize_negative_threshold(cls, v: float | None) -> float | None:
-        if v is None:
-            return None
-        if v == 0:
-            raise ValueError("Threshold magnitude must be non-zero")
-        return -abs(float(v))
+    _normalize_thresholds = field_validator(
+        "custom_stop_loss_pct", "custom_trailing_drawdown_pct"
+    )(_normalize_negative_pct_threshold)
 
 
 class TradeLotCreateRequest(BaseModel):

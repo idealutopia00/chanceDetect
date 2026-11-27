@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -508,11 +508,24 @@ class PositionService:
         eff_amount = existing.amount if amount is _UNSET else amount
         eff_shares = existing.shares if shares is _UNSET else shares
 
-        # Re-derive missing counterpart when one was updated or NAV changed
+        # Re-derive missing counterpart when one was updated or NAV/date/fee changed
+        nav_or_fee_changed = (
+            eff_nav != existing.nav
+            or eff_date != existing.trade_date
+            or eff_fee != existing.fee
+        )
         if amount is not _UNSET and shares is _UNSET and eff_amount is not None:
             eff_shares = None
         elif shares is not _UNSET and amount is _UNSET and eff_shares is not None:
             eff_amount = None
+        elif (
+            nav_or_fee_changed
+            and amount is _UNSET
+            and shares is _UNSET
+            and eff_amount is not None
+            and eff_nav is not None
+        ):
+            eff_shares = None
 
         eff_amount, eff_shares = derive_amount_and_shares(
             side=eff_side,
@@ -601,7 +614,12 @@ class PositionService:
 
         Never overwrites manually overridden (`nav_status = 'manual'`) lots.
         """
-        tracked_codes = self.sqlite.list_tracked_otc_codes()
+        # Only sync active positions, positions with pending lots, or recently closed
+        # positions within their post-exit review window (~40 trading days ~= 70 calendar days).
+        cutoff_closed_date = (self._today_fn() - timedelta(days=70)).isoformat()
+        tracked_codes = self.sqlite.list_tracked_otc_codes(
+            closed_after_date=cutoff_closed_date
+        )
         if otc_code is not None:
             target_code = _validate_otc_code(otc_code)
             target_codes = [c for c in tracked_codes if c == target_code]

@@ -371,13 +371,34 @@ export function PositionDetailPanel({
         </div>
       )}
 
-      {/* Pending Baseline Notice */}
+      {/* Pending Baseline Notice with Temporary Reference NAV & Linked Proxy Move */}
       {dualCurve.is_pending_baseline && (
-        <div className="flex items-center gap-2 rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-          <Clock className="h-4 w-4 shrink-0 text-amber-400" />
-          <span>
-            建仓日（{detail.opened_date}）官方净值尚未公布（Pending NAV），待晚间 21:30 或次早 09:00 同步回填后自动对齐 0% 基准起点。
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+          <div className="flex items-center gap-2">
+            <Clock className="h-4 w-4 shrink-0 text-amber-400" />
+            <span>
+              建仓日（{detail.opened_date}）官方净值尚未公布（Pending NAV），待晚间 21:30 或次早 09:00 同步回填后自动对齐 0% 基准起点。
+            </span>
+          </div>
+          {(detail.latest_nav !== null || detail.latest_proxy_pct_chg !== null) && (
+            <div className="flex flex-wrap items-center gap-3 font-mono text-[11px] text-amber-100">
+              {detail.latest_nav !== null && (
+                <span>
+                  参考最新净值 <strong>{detail.latest_nav.toFixed(4)}</strong>
+                  {detail.latest_nav_date ? ` (${detail.latest_nav_date})` : ''}
+                </span>
+              )}
+              {detail.latest_proxy_pct_chg !== null && (
+                <span>
+                  关联场内代理日涨跌{' '}
+                  <strong className={pctColor(detail.latest_proxy_pct_chg)}>
+                    {formatPct(detail.latest_proxy_pct_chg)}
+                  </strong>
+                  {detail.latest_proxy_date ? ` (${detail.latest_proxy_date})` : ''}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
 

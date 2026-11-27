@@ -665,7 +665,7 @@ def evaluate_exit_signals(
                 {
                     "rule_id": "take_profit_reached",
                     "title": "已达自定义止盈目标",
-                    "severity": "warning",
+                    "severity": "alert",
                     "triggered": True,
                     "message": f"当前成本收益 {cost_ret:+.2f}% 已达到自定义止盈目标 +{tp_target:.1f}%",
                     "metric_value": cost_ret,

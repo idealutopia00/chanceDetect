@@ -1134,11 +1134,26 @@ class SQLiteStore:
             ).fetchone()
         return row is not None
 
-    def list_tracked_otc_codes(self) -> list[str]:
+    def list_tracked_otc_codes(self, *, closed_after_date: str | None = None) -> list[str]:
+        if closed_after_date is None:
+            sql = "SELECT DISTINCT otc_code FROM tracked_positions ORDER BY otc_code ASC"
+            params: list[Any] = []
+        else:
+            sql = """
+                SELECT DISTINCT tp.otc_code
+                FROM tracked_positions tp
+                WHERE tp.status = 'active'
+                   OR tp.closed_date IS NULL
+                   OR tp.closed_date >= ?
+                   OR EXISTS (
+                       SELECT 1 FROM trade_lots tl
+                       WHERE tl.position_id = tp.id AND tl.nav_status = 'pending'
+                   )
+                ORDER BY tp.otc_code ASC
+            """
+            params = [closed_after_date]
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT otc_code FROM tracked_positions ORDER BY otc_code ASC"
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return [str(r["otc_code"]) for r in rows]
 
     def backfill_missing_position_names(self, otc_code: str, otc_name: str) -> None:

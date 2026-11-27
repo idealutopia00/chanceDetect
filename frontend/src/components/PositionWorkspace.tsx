@@ -118,6 +118,8 @@ interface LotEditState {
   navStr: string
   amountStr: string
   sharesStr: string
+  origAmountStr: string
+  origSharesStr: string
   sellRatioPctStr: string
   feeStr: string
   notes: string
@@ -212,6 +214,8 @@ export function PositionWorkspace({
   }
 
   const startEditLot = (lot: TradeLotRecord) => {
+    const amountInit = lot.amount !== null ? String(lot.amount) : ''
+    const sharesInit = lot.shares !== null ? String(lot.shares) : ''
     setLotEdit({
       positionId: lot.position_id,
       lotId: lot.id,
@@ -219,8 +223,10 @@ export function PositionWorkspace({
       tradeDate: lot.trade_date,
       navMode: lot.nav_status === 'manual' ? 'manual' : 'auto',
       navStr: lot.nav !== null ? String(lot.nav) : '',
-      amountStr: lot.amount !== null ? String(lot.amount) : '',
-      sharesStr: lot.shares !== null ? String(lot.shares) : '',
+      amountStr: amountInit,
+      sharesStr: sharesInit,
+      origAmountStr: amountInit,
+      origSharesStr: sharesInit,
       sellRatioPctStr:
         lot.sell_ratio !== null ? String(Math.round(lot.sell_ratio * 10000) / 100) : '',
       feeStr: String(lot.fee ?? 0),
@@ -245,15 +251,25 @@ export function PositionWorkspace({
           ? Number(lotEdit.sellRatioPctStr) / 100
           : null
 
-      await api.updateTradeLot(lotEdit.positionId, lotEdit.lotId, {
+      const amountChanged = lotEdit.amountStr.trim() !== lotEdit.origAmountStr.trim()
+      const sharesChanged = lotEdit.sharesStr.trim() !== lotEdit.origSharesStr.trim()
+
+      const payload: Parameters<typeof api.updateTradeLot>[2] = {
         trade_date: lotEdit.tradeDate,
         nav: navPayload,
-        amount: lotEdit.amountStr.trim() ? Number(lotEdit.amountStr) : null,
-        shares: lotEdit.sharesStr.trim() ? Number(lotEdit.sharesStr) : null,
         sell_ratio: sellRatioPayload,
         fee: lotEdit.feeStr.trim() ? Number(lotEdit.feeStr) : 0,
         notes: lotEdit.notes.trim(),
-      })
+      }
+      // Only send changed capital fields so backend re-derives the counterpart cleanly
+      if (amountChanged) {
+        payload.amount = lotEdit.amountStr.trim() ? Number(lotEdit.amountStr) : null
+      }
+      if (sharesChanged) {
+        payload.shares = lotEdit.sharesStr.trim() ? Number(lotEdit.sharesStr) : null
+      }
+
+      await api.updateTradeLot(lotEdit.positionId, lotEdit.lotId, payload)
       setLotEdit(null)
       await loadPositions()
     } catch (err: unknown) {

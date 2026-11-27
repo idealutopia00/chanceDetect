@@ -188,6 +188,12 @@ export function BuyPositionModal({
               }
             } else {
               setOtcCode(trimmed)
+              setOtcName('')
+              setLatestKnownNav(null)
+              setLatestKnownNavDate(null)
+              setDetectedActivePosId(null)
+              setProxySymbol(null)
+              setProxyLabel('')
             }
           }
         })
@@ -415,10 +421,22 @@ export function BuyPositionModal({
                       value={otcQuery}
                       onFocus={() => setShowDropdown(true)}
                       onChange={(e) => {
-                        setOtcQuery(e.target.value)
+                        const nextVal = e.target.value
+                        const trimmedVal = nextVal.trim()
+                        setOtcQuery(nextVal)
                         setShowDropdown(true)
-                        if (OTC_CODE_RE.test(e.target.value.trim())) {
-                          setOtcCode(e.target.value.trim())
+                        if (trimmedVal !== otcCode) {
+                          setDetectedActivePosId(null)
+                          setOtcName('')
+                          setLatestKnownNav(null)
+                          setLatestKnownNavDate(null)
+                          setProxySymbol(null)
+                          setProxyLabel('')
+                        }
+                        if (OTC_CODE_RE.test(trimmedVal)) {
+                          setOtcCode(trimmedVal)
+                        } else {
+                          setOtcCode('')
                         }
                       }}
                       placeholder="输入代码或名称，如 006131 / 沪深300 / 任意 6 位场外基金代码"
@@ -562,34 +580,7 @@ export function BuyPositionModal({
             </div>
           )}
 
-          {/* Side selector when adding a lot to existing position */}
-          {existingPosition && (
-            <div className="flex items-center gap-2">
-              <span className="text-slate-400">交易方向：</span>
-              <button
-                type="button"
-                onClick={() => setSide('buy')}
-                className={`rounded-lg border px-3 py-1.5 font-medium transition ${
-                  side === 'buy'
-                    ? 'border-rose-500/50 bg-rose-500/15 text-rose-200'
-                    : 'border-slate-700 bg-slate-950 text-slate-400'
-                }`}
-              >
-                买入 / 加仓
-              </button>
-              <button
-                type="button"
-                onClick={() => setSide('sell')}
-                className={`rounded-lg border px-3 py-1.5 font-medium transition ${
-                  side === 'sell'
-                    ? 'border-emerald-500/50 bg-emerald-500/15 text-emerald-200'
-                    : 'border-slate-700 bg-slate-950 text-slate-400'
-                }`}
-              >
-                卖出 / 减仓
-              </button>
-            </div>
-          )}
+          {/* Buy/scale-in modal stays strictly on buy side; SellPositionModal handles sells */}
 
           {/* Trade Date + 15:00 Cutoff Warning + Weekend Alignment */}
           <div>

@@ -484,7 +484,7 @@ def test_exit_signals_all_five_rules_custom_thresholds_and_unmapped_fallback(
         sigs_b_reset = {s["rule_id"]: s for s in p_b_reset["exit_signals"]}
         assert sigs_b_reset["trailing_drawdown"]["triggered"] is False
 
-        # 3. Position C: Overheated proxy + custom take-profit reached
+        # 3. Position C: Overheated proxy + custom take-profit reached (severity='alert')
         p_c = client.post(
             "/api/v1/positions",
             json={
@@ -496,6 +496,7 @@ def test_exit_signals_all_five_rules_custom_thresholds_and_unmapped_fallback(
         sigs_c = {s["rule_id"]: s for s in p_c["exit_signals"]}
         assert sigs_c["overheated_stage"]["severity"] == "warning"
         assert sigs_c["overheated_stage"]["triggered"] is True
+        assert sigs_c["take_profit_reached"]["severity"] == "alert"
         assert sigs_c["take_profit_reached"]["triggered"] is True
 
         # 4. Unmapped Position D: NO proxy -> single-curve fallback + non-proxy rules only
@@ -519,9 +520,109 @@ def test_exit_signals_all_five_rules_custom_thresholds_and_unmapped_fallback(
         # 5. Portfolio summary counts alert positions & alerts cleanly
         listing = client.get("/api/v1/positions?status=active").json()
         summary = listing["portfolio_summary"]
-        # Positions A (3 alerts) and D (2 alerts) have severity=='alert'
-        assert summary["exit_alert_position_count"] == 2
-        assert summary["exit_alert_count"] == 5
+        # Positions A (3 alerts), C (1 take-profit alert), and D (2 alerts) have severity=='alert'
+        assert summary["exit_alert_position_count"] == 3
+        assert summary["exit_alert_count"] == 6
+
+
+def test_review_regressions_pending_scale_in_fifo_lot_edit_rederive_and_closed_sync_window(
+    tmp_settings: Settings,
+) -> None:
+    """Regression coverage for code-review findings:
+    1. Adding a same-day Pending NAV scale-in lot on top of an older fee-free confirmed lot
+       must keep all_fee_free=False (short_term_fee_guard triggered) and include pending capital.
+    2. Editing a confirmed lot's `nav` or `amount` re-derives `shares` cleanly without stale cost.
+    3. `sync-nav` skips archived positions closed well outside the post-exit review window (>70d).
+    """
+    today = date(2026, 11, 20)
+    old_open = date(2026, 6, 1)
+    old_close = date(2026, 6, 15)  # > 150 calendar days ago -> outside 70d post-exit sync window
+    confirmed_open = date(2026, 11, 5)  # 15 calendar days ago -> fee-free
+
+    otc_006131 = [
+        (confirmed_open, 1.0000, 1.0000, 0.0, ""),
+        (date(2026, 11, 19), 1.1000, 1.1000, 10.0, ""),
+        # Note: 2026-11-20 (today) NOT yet published -> Pending NAV!
+    ]
+    otc_008888 = [
+        (old_open, 1.0000, 1.0000, 0.0, ""),
+        (old_close, 1.0500, 1.0500, 5.0, ""),
+    ]
+
+    requested_codes: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        code = request.url.path.rsplit("/", 1)[-1].removesuffix(".js")
+        requested_codes.append(code)
+        payloads = {
+            "006131": _build_pingzhongdata_js("006131", "华泰柏瑞沪深300ETF联接C", otc_006131),
+            "008888": _build_pingzhongdata_js("008888", "华夏国证半导体芯片ETF联接C", otc_008888),
+        }
+        body = payloads.get(code)
+        return httpx.Response(200, text=body) if body else httpx.Response(404, text="not found")
+
+    app = create_app(
+        tmp_settings,
+        otc_nav_provider=OTCNavProvider(transport=httpx.MockTransport(handler)),
+        today_fn=lambda: today,
+    )
+
+    with TestClient(app) as client:
+        # 1. Create confirmed position (>7d old) -> initially all_fee_free=True
+        p1 = client.post(
+            "/api/v1/positions",
+            json={"otc_code": "006131", "trade_date": confirmed_open.isoformat(), "amount": 1000.0},
+        ).json()["position"]
+        assert p1["fifo_fee_status"]["all_fee_free"] is True
+        lot1_id = p1["lots"][0]["id"]
+        assert abs(p1["lots"][0]["shares"] - 1000.0) < 0.01
+
+        # Edit confirmed lot's manual NAV to 2.00 without touching amount -> shares must re-derive to 500!
+        upd = client.patch(
+            f"/api/v1/positions/{p1['id']}/lots/{lot1_id}",
+            json={"nav": 2.0},
+        )
+        assert upd.status_code == 200
+        assert abs(upd.json()["lot"]["shares"] - 500.0) < 0.01
+        assert abs(upd.json()["position"]["avg_cost_nav"] - 2.0) < 0.01
+
+        # Restore back to confirmed official NAV (1.00) -> shares re-derives back to 1000
+        upd2 = client.patch(
+            f"/api/v1/positions/{p1['id']}/lots/{lot1_id}",
+            json={"nav": None},
+        )
+        assert upd2.status_code == 200
+        assert abs(upd2.json()["lot"]["shares"] - 1000.0) < 0.01
+
+        # Add same-day Pending NAV scale-in (1000 RMB on today) -> FIFO must mark penalized (<7d)
+        # and invested_capital must include pending_buy_amount (1000 + 1000 = 2000)
+        add_res = client.post(
+            f"/api/v1/positions/{p1['id']}/lots",
+            json={"side": "buy", "trade_date": today.isoformat(), "amount": 1000.0},
+        )
+        assert add_res.status_code == 201
+        p1_after = add_res.json()["position"]
+        assert p1_after["fifo_fee_status"]["all_fee_free"] is False
+        assert p1_after["fifo_fee_status"]["penalized_ratio"] > 0.0
+        assert p1_after["invested_capital"] == 2000.0
+        sigs = {s["rule_id"]: s for s in p1_after["exit_signals"]}
+        assert sigs["short_term_fee_guard"]["triggered"] is True
+
+        # 2. Create & close an old archived position (>70 days ago)
+        p_old = client.post(
+            "/api/v1/positions",
+            json={"otc_code": "008888", "trade_date": old_open.isoformat()},
+        ).json()["position"]
+        client.post(
+            f"/api/v1/positions/{p_old['id']}/lots",
+            json={"side": "sell", "trade_date": old_close.isoformat(), "sell_ratio": 1.0},
+        )
+
+        # Trigger sync-nav -> should ONLY fetch 006131 (active), NOT 008888 (closed >70d ago)!
+        requested_codes.clear()
+        sync_res = client.post("/api/v1/positions/sync-nav", json={})
+        assert sync_res.status_code == 200
+        assert requested_codes == ["006131"]
 
 
 def test_cli_positions_command_renders_active_and_all_positions(

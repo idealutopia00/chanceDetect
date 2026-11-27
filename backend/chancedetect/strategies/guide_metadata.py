@@ -4,18 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 
+from chancedetect.config import Settings
 from chancedetect.strategies.base import BaseStrategy
 from chancedetect.strategies.engine import BaseUniverseFilter, ScanRequestConfig
 from chancedetect.strategies.indicators import TREND_STAGE_THRESHOLDS
 from chancedetect.strategies.registry import StrategyRegistry
 from chancedetect.strategies.replay import DEFAULT_HOLDING_HORIZONS, ENTRY_BASIS
 
+_DEFAULT_SETTINGS = Settings()
+
 DEFAULT_HITS_WINDOW_DAYS = 20
 DEFAULT_SHORT_TERM_FEE_DAYS = 7
 DEFAULT_SHORT_TERM_FEE_RATE_PCT = 1.5
 DEFAULT_OTC_CUTOFF_TIME = "15:00"
-DEFAULT_EOD_SYNC_TIME = "16:15"
-DEFAULT_OTC_NAV_SYNC_TIMES: tuple[str, ...] = ("21:30", "09:00")
+DEFAULT_EOD_SYNC_TIME = f"{_DEFAULT_SETTINGS.eod_sync_hour:02d}:{_DEFAULT_SETTINGS.eod_sync_minute:02d}"
+DEFAULT_OTC_NAV_SYNC_TIMES: tuple[str, ...] = (
+    f"{_DEFAULT_SETTINGS.otc_nav_evening_hour:02d}:{_DEFAULT_SETTINGS.otc_nav_evening_minute:02d}",
+    f"{_DEFAULT_SETTINGS.otc_nav_morning_hour:02d}:{_DEFAULT_SETTINGS.otc_nav_morning_minute:02d}",
+)
 
 DEFAULT_EXIT_THRESHOLDS: dict[str, float | int] = {
     "trailing_drawdown_pct": -6.0,

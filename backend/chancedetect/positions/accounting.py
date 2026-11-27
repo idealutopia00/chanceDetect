@@ -36,6 +36,7 @@ class _FifoEntry:
     original_units: float
     remaining_units: float
     is_pending_qty: bool = False
+    estimated_pending_units: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -150,28 +151,19 @@ def _build_fifo_status(
     has_amount_data: bool,
     is_closed: bool,
 ) -> tuple[FifoFeeStatus, dict[int, LotFifoStatus]]:
-    # If all remaining entries are pending-qty (e.g. a single pending buy before evening NAV),
-    # assign equal synthetic weight 1.0 so 7-day countdown is still accurate on Day 0.
-    confirmed_rem_total = sum(
-        e.remaining_units for e in fifo_queue if not e.is_pending_qty and e.remaining_units > EPS
-    )
-    use_synthetic_pending_weights = (
-        not is_closed
-        and confirmed_rem_total <= EPS
-        and any(e.is_pending_qty for e in fifo_queue)
-    )
-    if use_synthetic_pending_weights:
-        active_weights = {
-            e.lot_id: 1.0 for e in fifo_queue if e.is_pending_qty
-        }
-        total_weight = float(len(active_weights))
-    else:
-        active_weights = {
-            e.lot_id: e.remaining_units
-            for e in fifo_queue
-            if not e.is_pending_qty and e.remaining_units > EPS
-        }
-        total_weight = confirmed_rem_total
+    # Include both confirmed remaining entries and any active pending-qty scale-in entries
+    # (using provisional estimated units when available) so Day-0 Pending NAV buys are never
+    # dropped from the 7-calendar-day FIFO short-term redemption fee guard.
+    active_weights: dict[int, float] = {}
+    if not is_closed:
+        for e in fifo_queue:
+            if not e.is_pending_qty and e.remaining_units > EPS:
+                active_weights[e.lot_id] = e.remaining_units
+            elif e.is_pending_qty:
+                active_weights[e.lot_id] = (
+                    e.estimated_pending_units if e.estimated_pending_units > EPS else 1.0
+                )
+    total_weight = sum(active_weights.values())
 
     per_lot_fifo: dict[int, LotFifoStatus] = {}
     remaining_lot_statuses: list[LotFifoStatus] = []
@@ -411,6 +403,12 @@ def _evaluate_capital_mode(
                     pending_buy_amount += cost_amt
                     total_bought_amount += cost_amt
                     per_lot_effective_shares[lot.id] = None
+                    ref_nav = (
+                        latest_nav
+                        if (latest_nav is not None and latest_nav > 0)
+                        else (last_avg_cost_nav if (last_avg_cost_nav and last_avg_cost_nav > 0) else 1.0)
+                    )
+                    est_units = max(cost_amt - lot_fee, 0.0) / ref_nav if ref_nav > 0 else 1.0
                     fifo_queue.append(
                         _FifoEntry(
                             lot_id=lot.id,
@@ -419,10 +417,18 @@ def _evaluate_capital_mode(
                             original_units=0.0,
                             remaining_units=0.0,
                             is_pending_qty=True,
+                            estimated_pending_units=est_units if est_units > EPS else 1.0,
                         )
                     )
             else:
                 per_lot_effective_shares[lot.id] = None
+                confirmed_lots_count = sum(1 for e in fifo_queue if not e.is_pending_qty and e.original_units > EPS)
+                avg_confirmed_units = (
+                    sum(e.original_units for e in fifo_queue if not e.is_pending_qty and e.original_units > EPS)
+                    / confirmed_lots_count
+                    if confirmed_lots_count > 0
+                    else 1.0
+                )
                 fifo_queue.append(
                     _FifoEntry(
                         lot_id=lot.id,
@@ -431,6 +437,7 @@ def _evaluate_capital_mode(
                         original_units=0.0,
                         remaining_units=0.0,
                         is_pending_qty=True,
+                        estimated_pending_units=avg_confirmed_units,
                     )
                 )
         else:
@@ -549,7 +556,7 @@ def _evaluate_capital_mode(
     elif total_bought_shares <= EPS and pending_buy_amount > EPS:
         invested_capital = round(pending_buy_amount, 2)
     elif not has_unconfirmed_buy_cost:
-        invested_capital = round(remaining_cost, 2)
+        invested_capital = round(remaining_cost + pending_buy_amount, 2)
     else:
         invested_capital = None
 
