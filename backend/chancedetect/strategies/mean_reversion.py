@@ -19,6 +19,7 @@ class RsiOversoldReboundStrategy(BaseStrategy):
     id = "rsi_oversold_rebound"
     name = "RSI 低位超卖企稳"
     category = "mean_reversion"
+    role = "entry"
     description = "近期 RSI 跌入超卖区间后出现拐头企稳迹象，捕捉短线超跌反弹机会。"
     params_model = RsiOversoldParams
 
@@ -85,6 +86,7 @@ class BollLowerReversalStrategy(BaseStrategy):
     id = "boll_lower_reversal"
     name = "布林带下轨反抽"
     category = "mean_reversion"
+    role = "entry"
     description = "近几日股价下探触及或跌破布林带下轨，当日收阳重新站回下轨之上，体现支撑反抽。"
     params_model = BollLowerReversalParams
 
@@ -161,6 +163,7 @@ class MaNegativeBiasStrategy(BaseStrategy):
     id = "ma_negative_bias"
     name = "均线负乖离极值"
     category = "mean_reversion"
+    role = "entry"
     description = "收盘价大幅低于均线形成深度负乖离，且当日跌势放缓或企稳，适合左侧逢低分批关注。"
     params_model = MaNegativeBiasParams
 

@@ -283,7 +283,7 @@ class SinaKlineProvider(BaseKlineProvider):
                 vol_shares = float(item["volume"])  # Sina reports volume in shares
                 o = cls._apply_qfq(raw_o, dt, factors)
                 h = cls._apply_qfq(raw_h, dt, factors)
-                l = cls._apply_qfq(raw_l, dt, factors)
+                lo = cls._apply_qfq(raw_l, dt, factors)
                 c = cls._apply_qfq(raw_c, dt, factors)
                 # Amount in 万元 based on unadjusted close * shares / 10000
                 amount_wan = round(vol_shares * raw_c / 10000.0, 2)
@@ -293,7 +293,7 @@ class SinaKlineProvider(BaseKlineProvider):
                         trade_date=dt,
                         open=o,
                         high=max(h, o, c),
-                        low=min(l, o, c),
+                        low=min(lo, o, c),
                         close=c,
                         volume=round(vol_shares / 100.0, 2),  # Normalize to lots (100 shares)
                         amount=amount_wan,

@@ -1,4 +1,7 @@
 export type StrategyCategory = 'trend' | 'mean_reversion' | 'momentum'
+export type StrategyRole = 'regime' | 'entry'
+export type TrendStage = 'oversold' | 'early' | 'mid' | 'overheated'
+export type RegimeCombineMode = 'AND' | 'OR'
 export type CombineMode = 'AND' | 'OR' | 'RESONANCE'
 export type SharePreference = 'C' | 'A'
 
@@ -15,6 +18,7 @@ export interface StrategyMeta {
   id: string
   name: string
   category: StrategyCategory
+  role: StrategyRole
   description: string
   default_params: Record<string, unknown>
   params_schema: {
@@ -36,8 +40,11 @@ export interface BaseUniverseFilter {
 
 export interface ScanRequestConfig {
   strategies: StrategySelection[]
+  regime_combine_mode: RegimeCombineMode
   combine_mode: CombineMode
   min_hits: number
+  hide_overheated: boolean
+  freshness_cooldown_days?: number
   base_filter: BaseUniverseFilter
   share_class_preference: SharePreference
   target_date?: string | null
@@ -59,6 +66,7 @@ export interface OTCMapping {
 export interface HitStrategyInfo {
   strategy_id: string
   strategy_name: string
+  role?: StrategyRole
   score: number
   reason: string
 }
@@ -77,8 +85,18 @@ export interface HitFundItem {
   avg_amount_20d: number
   vol_ratio: number
   rsi14: number | null
+  trend_stage?: TrendStage
+  is_fresh?: boolean
+  hits_20d?: number
+  bias20?: number | null
+  bias60?: number | null
+  bias20_z?: number | null
+  drawup_60d_low?: number | null
+  boll_pct_b?: number | null
+  pos_60d?: number | null
   hit_count: number
   composite_score: number
+  matched_regimes?: HitStrategyInfo[]
   hit_strategies: HitStrategyInfo[]
   otc_mappings: OTCMapping[]
 }
@@ -102,9 +120,17 @@ export interface ScanResponse {
   scanned_fund_count: number
   hit_fund_count: number
   hit_index_count: number
+  actionable_fund_count: number
+  actionable_index_count: number
+  watchlist_fund_count: number
+  watchlist_index_count: number
+  regime_combine_mode: RegimeCombineMode
   combine_mode: CombineMode
+  hide_overheated?: boolean
   share_class_preference: SharePreference
   groups: OpportunityGroup[]
+  actionable_groups: OpportunityGroup[]
+  watchlist_groups: OpportunityGroup[]
 }
 
 export interface PresetRecord {
@@ -168,9 +194,12 @@ export interface ExchangeFundInfo {
   otc_mappings?: OTCMapping[]
 }
 
+export type ReplayEntryBasis = 'T+1_close'
+
 export interface FundReplayResponse {
   fund: ExchangeFundInfo
   lookback_days: number
+  entry_basis: ReplayEntryBasis
   trigger_count: number
   bars: ReplayBar[]
   triggers: ReplayTrigger[]

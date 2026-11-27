@@ -253,12 +253,19 @@ export function FundReplayModal({ symbol, config, onClose }: FundReplayModalProp
               {/* Lightweight Forward Return Stats */}
               <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
                 <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-xs font-semibold text-slate-200">
-                    历史信号前瞻收益分布（轻量回看统计）
-                  </h3>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-xs font-semibold text-slate-200">
+                      历史信号前瞻收益分布（轻量回看统计）
+                    </h3>
+                    <span className="rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-300">
+                      {data.entry_basis === 'T+1_close'
+                        ? '入场成本：T+1 收盘价'
+                        : `入场成本：${data.entry_basis}`}
+                    </span>
+                  </div>
                   <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-                    <Info className="h-3.5 w-3.5 text-amber-400" />
-                    盘后触发信号后若次日 15:00 前申购场外基金，请重点关注 T+5 / T+10 / T+20 表现
+                    <Info className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                    盘后 T 日触发信号、次日 (T+1) 15:00 前申购按 T+1 收盘净值确认成本，统计自 T+1 起持有 5 / 10 / 20 / 40 个交易日（避开 7 日短赎费）的表现
                   </span>
                 </div>
 
@@ -266,14 +273,14 @@ export function FundReplayModal({ symbol, config, onClose }: FundReplayModalProp
                   <table className="w-full text-left font-mono text-xs">
                     <thead className="border-b border-slate-800 text-[11px] text-slate-400">
                       <tr>
-                        <th className="py-2 pr-3">持有窗口</th>
+                        <th className="py-2 pr-3">持有窗口 (自 T+1 起)</th>
                         <th className="py-2 px-3">有效样本</th>
                         <th className="py-2 px-3">胜率 (&gt;0)</th>
                         <th className="py-2 px-3">平均收益</th>
                         <th className="py-2 px-3">中位收益</th>
                         <th className="py-2 px-3">最大单次盈利</th>
                         <th className="py-2 px-3">最大单次亏损</th>
-                        <th className="py-2 pl-3">期间均值回撤</th>
+                        <th className="py-2 pl-3">期间均值回撤 (T+1 后)</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
@@ -311,10 +318,14 @@ export function FundReplayModal({ symbol, config, onClose }: FundReplayModalProp
                               : '-'}
                           </td>
                           <td className="py-2 px-3 text-rose-400">
-                            {s.max_gain_pct !== null ? `+${s.max_gain_pct.toFixed(2)}%` : '-'}
+                            {s.max_gain_pct !== null
+                              ? `${s.max_gain_pct > 0 ? '+' : ''}${s.max_gain_pct.toFixed(2)}%`
+                              : '-'}
                           </td>
                           <td className="py-2 px-3 text-emerald-400">
-                            {s.max_loss_pct !== null ? `${s.max_loss_pct.toFixed(2)}%` : '-'}
+                            {s.max_loss_pct !== null
+                              ? `${s.max_loss_pct > 0 ? '+' : ''}${s.max_loss_pct.toFixed(2)}%`
+                              : '-'}
                           </td>
                           <td className="py-2 pl-3 text-slate-400">
                             {s.avg_max_drawdown_pct !== null
