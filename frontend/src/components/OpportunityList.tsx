@@ -7,16 +7,25 @@ import {
   Eye,
   Flame,
   LineChart,
+  PlusCircle,
   Sparkles,
   Zap,
 } from 'lucide-react'
-import type { OTCMapping, OpportunityGroup, ScanResponse, TrendStage } from '../types'
+import type {
+  BuyModalPrefill,
+  OTCMapping,
+  OpportunityGroup,
+  ScanResponse,
+  TrendStage,
+} from '../types'
 
 interface OpportunityListProps {
   result: ScanResponse | null
   loading: boolean
   error: string | null
   onSelectFund: (symbol: string) => void
+  onRecordBuy?: (prefill: BuyModalPrefill) => void
+  activeTemplateName?: string | null
 }
 
 const TREND_STAGE_META: Record<TrendStage, { label: string; badgeClass: string }> = {
@@ -66,6 +75,8 @@ export function OpportunityList({
   loading,
   error,
   onSelectFund,
+  onRecordBuy,
+  activeTemplateName,
 }: OpportunityListProps) {
   const [activeBucket, setActiveBucket] = useState<'actionable' | 'watchlist'>('actionable')
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null)
@@ -544,6 +555,41 @@ export function OpportunityList({
                             )}
                             {otc.fee_rate && (
                               <span className="font-mono text-slate-500">{otc.fee_rate}</span>
+                            )}
+                            {onRecordBuy && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onRecordBuy({
+                                    otc_code: otc.otc_code,
+                                    otc_name: otc.otc_name,
+                                    exchange_symbol: otc.exchange_symbol || rep.symbol,
+                                    exchange_name: rep.name,
+                                    entry_signal_snapshot: {
+                                      signal_date: result.trade_date,
+                                      template_name: activeTemplateName ?? null,
+                                      trend_stage: rep.trend_stage ?? null,
+                                      strategy_names: [
+                                        ...(rep.matched_regimes ?? []).map((r) => r.strategy_name),
+                                        ...rep.hit_strategies.map((s) => s.strategy_name),
+                                      ],
+                                      regime_names: (rep.matched_regimes ?? []).map(
+                                        (r) => r.strategy_name,
+                                      ),
+                                      entry_names: rep.hit_strategies.map((s) => s.strategy_name),
+                                      proxy_symbol: rep.symbol,
+                                      proxy_name: rep.name,
+                                      proxy_close: rep.close,
+                                      index_name: grp.index_name,
+                                    },
+                                  })
+                                }
+                                className="inline-flex items-center gap-0.5 rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-200 transition hover:bg-amber-500/30"
+                                title="一键记录场外买入并保存当前信号快照"
+                              >
+                                <PlusCircle className="h-3 w-3" />
+                                记录买入
+                              </button>
                             )}
                           </div>
                         </div>

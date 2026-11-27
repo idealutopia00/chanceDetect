@@ -11,7 +11,9 @@ from rich.console import Console
 from rich.table import Table
 
 from chancedetect.config import get_settings
+from chancedetect.data.otc_nav_provider import OTCNavProvider
 from chancedetect.data.sync_service import SyncService
+from chancedetect.positions.service import PositionService
 from chancedetect.storage.bar_store import BarStore
 from chancedetect.storage.sqlite_store import SQLiteStore
 from chancedetect.strategies.engine import (
@@ -33,6 +35,44 @@ def _init_services() -> tuple[SQLiteStore, BarStore, SyncService, StrategyEngine
     sync_svc = SyncService(settings, sqlite, bars)
     engine = StrategyEngine(sqlite, bars)
     return sqlite, bars, sync_svc, engine
+
+
+def _init_position_service() -> PositionService:
+    settings = get_settings()
+    sqlite = SQLiteStore(settings.sqlite_path)
+    bars = BarStore(settings.daily_bars_path, settings.benchmarks_path, settings.features_path)
+    provider = OTCNavProvider(timeout=settings.request_timeout_sec)
+    return PositionService(sqlite, bars, provider)
+
+
+@app.command("sync-nav")
+def sync_nav(
+    otc_code: Annotated[
+        str | None,
+        typer.Option("--otc-code", "-c", help="Refresh only a specific tracked 6-digit OTC fund code"),
+    ] = None,
+) -> None:
+    """Refresh official OTC NAVs strictly for tracked positions and backfill Pending NAV lots."""
+    pos_svc = _init_position_service()
+    console.print("[cyan]Syncing official OTC NAVs for tracked positions...[/cyan]")
+    res = pos_svc.sync_tracked_otc_navs(otc_code=otc_code)
+
+    table = Table(title="OTC NAV Sync Summary")
+    table.add_column("Metric", style="bold")
+    table.add_column("Value", justify="right")
+    table.add_row("Refreshed Tracked Funds", str(res["refreshed_funds"]))
+    table.add_row("Backfilled Pending NAV Lots", str(res["backfilled_lots"]))
+    table.add_row("Upserted NAV Bars", str(res["updated_bars"]))
+    table.add_row("Errors", str(len(res["errors"])))
+    console.print(table)
+
+    if res["errors"]:
+        err_table = Table(title="OTC NAV Sync Errors")
+        err_table.add_column("OTC Code")
+        err_table.add_column("Error")
+        for err in res["errors"]:
+            err_table.add_row(str(err["otc_code"]), str(err["error"]))
+        console.print(err_table)
 
 
 @app.command("sync-metadata")

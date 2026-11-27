@@ -274,3 +274,170 @@ export interface HealthResponse {
   storage: StorageStats
   sync_running: boolean
 }
+
+export type AppTab = 'scanner' | 'positions' | 'data'
+export type PositionStatus = 'active' | 'closed'
+export type TradeSide = 'buy' | 'sell'
+export type NavStatus = 'pending' | 'confirmed' | 'manual'
+
+export interface ProxyFundSummary {
+  symbol: string
+  code: string
+  name: string
+  fund_type: 'ETF' | 'LOF'
+  index_code: string
+  index_name: string
+}
+
+export interface EntrySignalSnapshot {
+  signal_date?: string | null
+  template_name?: string | null
+  trend_stage?: TrendStage | string | null
+  strategy_names?: string[]
+  regime_names?: string[]
+  entry_names?: string[]
+  proxy_symbol?: string | null
+  proxy_name?: string | null
+  proxy_close?: number | null
+  index_name?: string | null
+  [key: string]: unknown
+}
+
+export interface TradeLotRecord {
+  id: number
+  position_id: number
+  side: TradeSide
+  trade_date: string
+  nav: number | null
+  nav_status: NavStatus
+  amount: number | null
+  shares: number | null
+  sell_ratio: number | null
+  fee: number
+  notes: string
+  reference_nav: number | null
+  reference_nav_date: string | null
+  reference_proxy_pct_chg: number | null
+  created_at: string
+  updated_at: string
+}
+
+export interface TrackedPositionRecord {
+  id: number
+  otc_code: string
+  otc_name: string
+  exchange_symbol: string | null
+  proxy_fund: ProxyFundSummary | null
+  status: PositionStatus
+  opened_date: string
+  closed_date: string | null
+  entry_signal_snapshot: EntrySignalSnapshot
+  notes: string
+  custom_stop_loss_pct: number | null
+  custom_trailing_drawdown_pct: number | null
+  custom_take_profit_pct: number | null
+  latest_nav: number | null
+  latest_nav_date: string | null
+  latest_daily_return_pct: number | null
+  latest_proxy_close: number | null
+  latest_proxy_pct_chg: number | null
+  latest_proxy_date: string | null
+  lot_count: number
+  pending_lot_count: number
+  has_pending_nav: boolean
+  lots: TradeLotRecord[]
+  created_at: string
+  updated_at: string
+}
+
+export interface PositionsSummary {
+  active_count: number
+  closed_count: number
+  pending_nav_count: number
+}
+
+export interface PositionsListResponse {
+  positions: TrackedPositionRecord[]
+  summary: PositionsSummary
+}
+
+export interface OTCLookupItem {
+  otc_code: string
+  otc_name: string
+  share_class: 'A' | 'C' | 'E' | 'I' | 'OTHER'
+  mapping_type: 'FEEDER' | 'LOF_SELF' | 'LOF_SIBLING' | null
+  purchase_status: string
+  fee_rate: string
+  is_mapped: boolean
+  suggested_proxy: ProxyFundSummary | null
+  latest_nav: number | null
+  latest_nav_date: string | null
+  has_active_position: boolean
+  active_position_id: number | null
+}
+
+export interface OTCLookupResponse {
+  query: string
+  items: OTCLookupItem[]
+  resolved_external: OTCLookupItem | null
+}
+
+export interface SyncNavResponse {
+  refreshed_funds: number
+  backfilled_lots: number
+  updated_bars: number
+  errors: Array<{ otc_code: string; error: string }>
+}
+
+export interface PositionCreatePayload {
+  otc_code: string
+  otc_name?: string | null
+  exchange_symbol?: string | null
+  trade_date?: string | null
+  nav?: number | null
+  amount?: number | null
+  shares?: number | null
+  fee?: number
+  notes?: string
+  lot_notes?: string
+  entry_signal_snapshot?: EntrySignalSnapshot
+}
+
+export interface PositionUpdatePayload {
+  otc_name?: string | null
+  exchange_symbol?: string | null
+  notes?: string
+  custom_stop_loss_pct?: number | null
+  custom_trailing_drawdown_pct?: number | null
+  custom_take_profit_pct?: number | null
+}
+
+export interface TradeLotCreatePayload {
+  side?: TradeSide
+  trade_date?: string | null
+  nav?: number | null
+  amount?: number | null
+  shares?: number | null
+  sell_ratio?: number | null
+  fee?: number
+  notes?: string
+}
+
+export interface TradeLotUpdatePayload {
+  side?: TradeSide
+  trade_date?: string
+  nav?: number | null
+  amount?: number | null
+  shares?: number | null
+  sell_ratio?: number | null
+  fee?: number
+  notes?: string
+}
+
+export interface BuyModalPrefill {
+  otc_code: string
+  otc_name: string
+  exchange_symbol: string | null
+  exchange_name?: string | null
+  entry_signal_snapshot?: EntrySignalSnapshot
+}

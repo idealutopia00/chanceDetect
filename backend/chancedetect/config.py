@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     enable_scheduler: bool = Field(default=True)
     eod_sync_hour: int = Field(default=16, ge=0, le=23)
     eod_sync_minute: int = Field(default=15, ge=0, le=59)
+    otc_nav_evening_hour: int = Field(default=21, ge=0, le=23)
+    otc_nav_evening_minute: int = Field(default=30, ge=0, le=59)
+    otc_nav_morning_hour: int = Field(default=9, ge=0, le=23)
+    otc_nav_morning_minute: int = Field(default=0, ge=0, le=59)
     catchup_interval_minutes: int = Field(default=30, ge=5, le=240)
 
     # Server
