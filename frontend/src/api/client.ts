@@ -1,6 +1,7 @@
 import type {
   ExchangeFundInfo,
   FundReplayResponse,
+  GuideMetadataResponse,
   HealthResponse,
   PresetRecord,
   ScanRequestConfig,
@@ -33,6 +34,8 @@ export const api = {
   health: () => request<HealthResponse>('/health'),
 
   listStrategies: () => request<{ strategies: StrategyMeta[] }>('/strategies'),
+
+  guideMetadata: () => request<GuideMetadataResponse>('/guide/metadata'),
 
   scan: (config: ScanRequestConfig) =>
     request<ScanResponse>('/scan', {

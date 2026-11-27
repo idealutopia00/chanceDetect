@@ -13,6 +13,7 @@ from chancedetect.data.sync_service import SyncService
 from chancedetect.storage.bar_store import BarStore
 from chancedetect.storage.sqlite_store import SQLiteStore
 from chancedetect.strategies.engine import ScanRequestConfig, StrategyEngine
+from chancedetect.strategies.guide_metadata import build_guide_metadata
 from chancedetect.strategies.replay import build_fund_replay
 
 logger = logging.getLogger(__name__)
@@ -39,6 +40,12 @@ def health(request: Request) -> dict[str, Any]:
 def list_strategies(request: Request) -> dict[str, Any]:
     _, _, _, engine = _deps(request)
     return {"strategies": engine.registry.list_meta()}
+
+
+@router.get("/guide/metadata")
+def get_guide_metadata(request: Request) -> dict[str, Any]:
+    _, _, _, engine = _deps(request)
+    return build_guide_metadata(engine.registry)
 
 
 @router.post("/scan")

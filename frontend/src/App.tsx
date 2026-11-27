@@ -4,6 +4,7 @@ import { DataSyncPanel } from './components/DataSyncPanel'
 import { FundReplayModal } from './components/FundReplayModal'
 import { Header } from './components/Header'
 import { OpportunityList } from './components/OpportunityList'
+import { ProductGuidePanel, type GuideNavigationTarget } from './components/ProductGuidePanel'
 import { StrategySidebar } from './components/StrategySidebar'
 import {
   applyScenarioTemplate,
@@ -11,6 +12,7 @@ import {
   type ScenarioTemplate,
 } from './config/scenarioTemplates'
 import type {
+  AppTab,
   HealthResponse,
   PresetRecord,
   ScanRequestConfig,
@@ -66,7 +68,8 @@ function normalizePresetConfig(
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'scanner' | 'data'>('scanner')
+  const [activeTab, setActiveTab] = useState<AppTab>('scanner')
+  const [guideTarget, setGuideTarget] = useState<GuideNavigationTarget | null>(null)
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [strategies, setStrategies] = useState<StrategyMeta[]>([])
   const [presets, setPresets] = useState<PresetRecord[]>([])
@@ -75,6 +78,16 @@ export default function App() {
   const [scanning, setScanning] = useState(false)
   const [scanError, setScanError] = useState<string | null>(null)
   const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null)
+
+  const handleNavigateToGuide = useCallback((anchorId: string) => {
+    setSelectedSymbol(null)
+    setActiveTab('guide')
+    setGuideTarget({ anchorId, seq: Date.now() })
+  }, [])
+
+  const handleGuideAnchorHandled = useCallback(() => {
+    setGuideTarget(null)
+  }, [])
 
   const refreshHealth = useCallback(async () => {
     try {
@@ -166,6 +179,7 @@ export default function App() {
               onSavePreset={handleSavePreset}
               onDeletePreset={handleDeletePreset}
               onLoadPreset={handleLoadPreset}
+              onNavigateToGuide={handleNavigateToGuide}
             />
             <section className="min-w-0 flex-1">
               <OpportunityList
@@ -173,9 +187,17 @@ export default function App() {
                 loading={scanning}
                 error={scanError}
                 onSelectFund={setSelectedSymbol}
+                onNavigateToGuide={handleNavigateToGuide}
               />
             </section>
           </div>
+        )}
+
+        {activeTab === 'guide' && (
+          <ProductGuidePanel
+            targetAnchor={guideTarget}
+            onAnchorHandled={handleGuideAnchorHandled}
+          />
         )}
 
         {activeTab === 'data' && (
@@ -194,6 +216,7 @@ export default function App() {
           symbol={selectedSymbol}
           config={config}
           onClose={() => setSelectedSymbol(null)}
+          onNavigateToGuide={handleNavigateToGuide}
         />
       )}
     </div>

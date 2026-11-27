@@ -1020,3 +1020,92 @@ def test_replay_markers_match_two_stage_funnel_and_regime_only_inspection(
         assert len(regime_dates) > 5
         assert regime_only_rep["entry_basis"] == "T+1_close"
         assert [s["horizon_days"] for s in regime_only_rep["forward_stats"]] == [5, 10, 20, 40]
+
+
+def test_guide_metadata_reflects_live_registry_templates_and_defaults(
+    tmp_settings: Settings,
+) -> None:
+    """Verify GET /api/v1/guide/metadata dynamically matches the live strategy registry,
+    all 3 built-in scenario templates, and canonical system rule defaults.
+    """
+    app = create_app(tmp_settings)
+    registry = app.state.strategy_engine.registry
+    live_strategies = registry.list_all()
+
+    with TestClient(app) as client:
+        r = client.get("/api/v1/guide/metadata")
+        assert r.status_code == 200
+        payload = r.json()
+
+        # 1. All 10 live strategies match exact IDs, names, descriptions, roles, and defaults
+        strategies = payload["strategies"]
+        assert len(strategies) == len(live_strategies) == 10
+
+        by_id = {s["strategy_id"]: s for s in strategies}
+        assert set(by_id.keys()) == {s.id for s in live_strategies}
+
+        for live in live_strategies:
+            item = by_id[live.id]
+            assert item["id"] == live.id
+            assert item["name"] == live.name
+            assert item["description"] == live.description
+            assert item["role"] == live.role
+            assert item["category"] == live.category
+            expected_defaults = live.default_params().model_dump()
+            assert item["default_params"] == expected_defaults
+            assert "properties" in item["params_schema"]
+
+            # Structured parameter list matches live default_params keys & exact default values
+            params_list = item["params"]
+            assert [p["key"] for p in params_list] == list(expected_defaults.keys())
+            for param_entry in params_list:
+                assert param_entry["default"] == expected_defaults[param_entry["key"]]
+                assert param_entry["label"]
+
+        # 2. Grouped by role: 3 Trend Regime + 7 Entry Trigger
+        by_role = payload["strategies_by_role"]
+        assert [s["strategy_id"] for s in by_role["regime"]] == [
+            s.id for s in live_strategies if s.role == "regime"
+        ]
+        assert [s["strategy_id"] for s in by_role["entry"]] == [
+            s.id for s in live_strategies if s.role == "entry"
+        ]
+        assert len(by_role["regime"]) == 3
+        assert len(by_role["entry"]) == 7
+
+        # 3. Built-in 3 scenario templates reference valid registered strategies & live names
+        templates = payload["scenario_templates"]
+        assert len(templates) == 3
+        assert [t["id"] for t in templates] == [
+            "right_side_mainline",
+            "left_side_oversold",
+            "strong_momentum_focus",
+        ]
+        for tpl in templates:
+            assert tpl["name"]
+            assert tpl["description"]
+            assert tpl["regime_combine_mode"] in {"AND", "OR"}
+            assert tpl["combine_mode"] in {"AND", "OR", "RESONANCE"}
+            for sid in tpl["enabled_regimes"]:
+                assert by_id[sid]["role"] == "regime"
+            for sid in tpl["enabled_entries"]:
+                assert by_id[sid]["role"] == "entry"
+            assert tpl["enabled_regime_names"] == [by_id[sid]["name"] for sid in tpl["enabled_regimes"]]
+            assert tpl["enabled_entry_names"] == [by_id[sid]["name"] for sid in tpl["enabled_entries"]]
+
+        # 4. Canonical system defaults
+        defaults = payload["system_defaults"]
+        assert defaults["freshness_cooldown_days"] == 10
+        assert defaults["hits_window_days"] == 20
+        assert defaults["replay_horizons"] == [5, 10, 20, 40]
+        assert defaults["replay_entry_basis"] == "T+1_close"
+        assert defaults["short_term_fee_days"] == 7
+        assert defaults["short_term_fee_rate_pct"] == 1.5
+        assert defaults["otc_cutoff_time"] == "15:00"
+        assert defaults["exit_thresholds"]["trailing_drawdown_pct"] == -6.0
+        assert defaults["exit_thresholds"]["cost_stop_loss_pct"] == -8.0
+        assert defaults["exit_thresholds"]["ma20_watch_days"] == 1
+        assert defaults["exit_thresholds"]["ma20_alert_days"] == 2
+        assert defaults["trend_stage_thresholds"]["overheated"]["boll_pct_b_min"] == 0.85
+        assert defaults["trend_stage_thresholds"]["overheated"]["bias20_z_min"] == 2.2
+

@@ -11,12 +11,14 @@ import {
   Zap,
 } from 'lucide-react'
 import type { OTCMapping, OpportunityGroup, ScanResponse, TrendStage } from '../types'
+import { GlossaryTooltip } from './GlossaryTooltip'
 
 interface OpportunityListProps {
   result: ScanResponse | null
   loading: boolean
   error: string | null
   onSelectFund: (symbol: string) => void
+  onNavigateToGuide?: (anchorId: string) => void
 }
 
 const TREND_STAGE_META: Record<TrendStage, { label: string; badgeClass: string }> = {
@@ -66,6 +68,7 @@ export function OpportunityList({
   loading,
   error,
   onSelectFund,
+  onNavigateToGuide,
 }: OpportunityListProps) {
   const [activeBucket, setActiveBucket] = useState<'actionable' | 'watchlist'>('actionable')
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null)
@@ -278,15 +281,29 @@ export function OpportunityList({
                         <span className="rounded border border-slate-700 bg-slate-800/80 px-1.5 py-0.5 text-[10px] text-slate-300">
                           {rep.fund_type}
                         </span>
-                        <span
-                          className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${stageMeta.badgeClass}`}
-                        >
-                          {stageMeta.label}
+                        <span className="inline-flex items-center gap-0.5">
+                          <span
+                            className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${stageMeta.badgeClass}`}
+                          >
+                            {stageMeta.label}
+                          </span>
+                          <GlossaryTooltip
+                            termId="trend-stage"
+                            onNavigateToGuide={onNavigateToGuide}
+                            iconClassName="h-3 w-3"
+                          />
                         </span>
                         {!isWatchlist && rep.is_fresh && (
-                          <span className="inline-flex items-center gap-1 rounded border border-teal-400/50 bg-teal-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-teal-200">
-                            <Sparkles className="h-2.5 w-2.5" />
-                            新信号
+                          <span className="inline-flex items-center gap-0.5">
+                            <span className="inline-flex items-center gap-1 rounded border border-teal-400/50 bg-teal-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-teal-200">
+                              <Sparkles className="h-2.5 w-2.5" />
+                              新信号
+                            </span>
+                            <GlossaryTooltip
+                              termId="fresh-signal"
+                              onNavigateToGuide={onNavigateToGuide}
+                              iconClassName="h-3 w-3"
+                            />
                           </span>
                         )}
                         {hits20d > 0 && (
@@ -341,8 +358,8 @@ export function OpportunityList({
 
                       {/* Compact Raw Extension & Crowding Metrics Strip */}
                       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-slate-800/80 bg-slate-950/50 px-2.5 py-1 font-mono text-[11px] text-slate-400">
-                        <span>
-                          MA20乖离{' '}
+                        <span className="inline-flex items-center gap-1">
+                          <span>MA20乖离</span>
                           <strong
                             className={
                               rep.bias20 !== null && rep.bias20 !== undefined
@@ -356,6 +373,25 @@ export function OpportunityList({
                           >
                             {formatMetricPct(rep.bias20)}
                           </strong>
+                          {rep.bias20_z !== null && rep.bias20_z !== undefined && (
+                            <span
+                              className={
+                                rep.bias20_z >= 2.2
+                                  ? 'text-rose-300'
+                                  : rep.bias20_z <= -2.0
+                                    ? 'text-cyan-300'
+                                    : 'text-slate-500'
+                              }
+                            >
+                              (Z {rep.bias20_z > 0 ? '+' : ''}
+                              {rep.bias20_z.toFixed(1)})
+                            </span>
+                          )}
+                          <GlossaryTooltip
+                            termId="bias20-z"
+                            onNavigateToGuide={onNavigateToGuide}
+                            iconClassName="h-3 w-3"
+                          />
                         </span>
                         <span className="text-slate-700">·</span>
                         <span>
@@ -370,8 +406,8 @@ export function OpportunityList({
                           </strong>
                         </span>
                         <span className="text-slate-700">·</span>
-                        <span>
-                          %B{' '}
+                        <span className="inline-flex items-center gap-1">
+                          <span>%B</span>
                           <strong
                             className={
                               rep.boll_pct_b !== null && rep.boll_pct_b !== undefined
@@ -387,10 +423,15 @@ export function OpportunityList({
                               ? rep.boll_pct_b.toFixed(2)
                               : '-'}
                           </strong>
+                          <GlossaryTooltip
+                            termId="boll-pct-b"
+                            onNavigateToGuide={onNavigateToGuide}
+                            iconClassName="h-3 w-3"
+                          />
                         </span>
                         <span className="text-slate-700">·</span>
-                        <span>
-                          RSI14{' '}
+                        <span className="inline-flex items-center gap-1">
+                          <span>RSI14</span>
                           <strong
                             className={
                               rep.rsi14 !== null
@@ -404,6 +445,11 @@ export function OpportunityList({
                           >
                             {rep.rsi14 !== null ? rep.rsi14.toFixed(1) : '-'}
                           </strong>
+                          <GlossaryTooltip
+                            termId="rsi14"
+                            onNavigateToGuide={onNavigateToGuide}
+                            iconClassName="h-3 w-3"
+                          />
                         </span>
                       </div>
                     </div>

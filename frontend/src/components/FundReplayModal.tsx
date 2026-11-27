@@ -3,14 +3,21 @@ import { createChart, ColorType, type IChartApi, type SeriesMarker, type Time } 
 import { Check, Copy, Info, X } from 'lucide-react'
 import { api } from '../api/client'
 import type { FundReplayResponse, OTCMapping, ScanRequestConfig } from '../types'
+import { GlossaryTooltip } from './GlossaryTooltip'
 
 interface FundReplayModalProps {
   symbol: string | null
   config: ScanRequestConfig
   onClose: () => void
+  onNavigateToGuide?: (anchorId: string) => void
 }
 
-export function FundReplayModal({ symbol, config, onClose }: FundReplayModalProps) {
+export function FundReplayModal({
+  symbol,
+  config,
+  onClose,
+  onNavigateToGuide,
+}: FundReplayModalProps) {
   const [data, setData] = useState<FundReplayResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -257,15 +264,27 @@ export function FundReplayModal({ symbol, config, onClose }: FundReplayModalProp
                     <h3 className="text-xs font-semibold text-slate-200">
                       历史信号前瞻收益分布（轻量回看统计）
                     </h3>
-                    <span className="rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-300">
+                    <span className="inline-flex items-center gap-1 rounded-md border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 font-mono text-[10px] font-semibold text-amber-300">
                       {data.entry_basis === 'T+1_close'
                         ? '入场成本：T+1 收盘价'
                         : `入场成本：${data.entry_basis}`}
+                      <GlossaryTooltip
+                        termId="t-plus-1"
+                        onNavigateToGuide={onNavigateToGuide}
+                        iconClassName="h-3 w-3"
+                      />
                     </span>
                   </div>
-                  <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
+                  <span className="inline-flex flex-wrap items-center gap-1 text-[11px] text-slate-400">
                     <Info className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-                    盘后 T 日触发信号、次日 (T+1) 15:00 前申购按 T+1 收盘净值确认成本，统计自 T+1 起持有 5 / 10 / 20 / 40 个交易日（避开 7 日短赎费）的表现
+                    <span>
+                      盘后 T 日触发信号、次日 (T+1) 15:00 前申购按 T+1 收盘净值确认成本，统计自 T+1 起持有 5 / 10 / 20 / 40 个交易日（避开 7 日短赎费）的表现
+                    </span>
+                    <GlossaryTooltip
+                      termId="short-term-fee"
+                      onNavigateToGuide={onNavigateToGuide}
+                      iconClassName="h-3.5 w-3.5"
+                    />
                   </span>
                 </div>
 

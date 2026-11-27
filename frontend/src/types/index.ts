@@ -1,3 +1,4 @@
+export type AppTab = 'scanner' | 'guide' | 'data'
 export type StrategyCategory = 'trend' | 'mean_reversion' | 'momentum'
 export type StrategyRole = 'regime' | 'entry'
 export type TrendStage = 'oversold' | 'early' | 'mid' | 'overheated'
@@ -273,4 +274,85 @@ export interface HealthResponse {
   universe: UniverseStats
   storage: StorageStats
   sync_running: boolean
+}
+
+export interface GuideStrategyParam {
+  key: string
+  label: string
+  type: string
+  default: unknown
+  minimum?: number | null
+  maximum?: number | null
+}
+
+export interface GuideStrategyMeta extends StrategyMeta {
+  strategy_id: string
+  role_label: string
+  params: GuideStrategyParam[]
+}
+
+export interface GuideScenarioTemplate {
+  id: string
+  name: string
+  badge?: string | null
+  description: string
+  regime_combine_mode: RegimeCombineMode
+  combine_mode: CombineMode
+  min_hits: number
+  enabled_regimes: string[]
+  enabled_entries: string[]
+  enabled_regime_names: string[]
+  enabled_entry_names: string[]
+}
+
+export interface GuideSystemDefaults {
+  freshness_cooldown_days: number
+  hits_window_days: number
+  replay_horizons: number[]
+  replay_entry_basis: ReplayEntryBasis
+  short_term_fee_days: number
+  short_term_fee_rate_pct: number
+  otc_cutoff_time: string
+  eod_sync_time: string
+  otc_nav_sync_times: string[]
+  base_filter: {
+    min_avg_amount_20d: number
+    min_listing_days: number
+  }
+  exit_thresholds: {
+    trailing_drawdown_pct: number
+    cost_stop_loss_pct: number
+    ma20_watch_days: number
+    ma20_alert_days: number
+    short_term_fee_days: number
+    short_term_fee_rate_pct: number
+  }
+  trend_stage_thresholds: {
+    overheated: {
+      boll_pct_b_min: number
+      bias20_z_min: number
+      rsi14_min: number
+      pos_60d_min: number
+    }
+    oversold: {
+      rsi14_max: number
+      boll_pct_b_max: number
+      bias20_z_max: number
+    }
+    early: {
+      drawup_60d_low_max: number
+      rsi14_max: number
+      boll_pct_b_max: number
+    }
+  }
+}
+
+export interface GuideMetadataResponse {
+  strategies: GuideStrategyMeta[]
+  strategies_by_role: {
+    regime: GuideStrategyMeta[]
+    entry: GuideStrategyMeta[]
+  }
+  scenario_templates: GuideScenarioTemplate[]
+  system_defaults: GuideSystemDefaults
 }

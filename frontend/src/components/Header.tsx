@@ -1,9 +1,9 @@
-import { Activity, Database, Radar, RefreshCw } from 'lucide-react'
-import type { HealthResponse } from '../types'
+import { Activity, BookOpen, Database, Radar, RefreshCw } from 'lucide-react'
+import type { AppTab, HealthResponse } from '../types'
 
 interface HeaderProps {
-  activeTab: 'scanner' | 'data'
-  onTabChange: (tab: 'scanner' | 'data') => void
+  activeTab: AppTab
+  onTabChange: (tab: AppTab) => void
   health: HealthResponse | null
 }
 
@@ -42,6 +42,18 @@ export function Header({ activeTab, onTabChange, health }: HeaderProps) {
             >
               <Activity className="h-3.5 w-3.5" />
               机会筛选工作台
+            </button>
+            <button
+              type="button"
+              onClick={() => onTabChange('guide')}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition ${
+                activeTab === 'guide'
+                  ? 'bg-amber-500/20 text-amber-300 shadow-sm ring-1 ring-amber-500/30'
+                  : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+              }`}
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              产品说明
             </button>
             <button
               type="button"

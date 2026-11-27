@@ -17,6 +17,7 @@ import {
   SCENARIO_TEMPLATES,
   type ScenarioTemplate,
 } from '../config/scenarioTemplates'
+import { GlossaryTooltip } from './GlossaryTooltip'
 import type {
   CombineMode,
   JsonSchemaProperty,
@@ -40,6 +41,7 @@ interface StrategySidebarProps {
   onSavePreset: (name: string, description: string) => Promise<void>
   onDeletePreset: (id: number) => Promise<void>
   onLoadPreset: (preset: PresetRecord) => void
+  onNavigateToGuide?: (anchorId: string) => void
 }
 
 const CATEGORY_META: Record<StrategyCategory, { label: string; badge: string }> = {
@@ -65,6 +67,7 @@ export function StrategySidebar({
   onSavePreset,
   onDeletePreset,
   onLoadPreset,
+  onNavigateToGuide,
 }: StrategySidebarProps) {
   const [expandedStrategy, setExpandedStrategy] = useState<string | null>(null)
   const [savingPreset, setSavingPreset] = useState(false)
@@ -387,6 +390,7 @@ export function StrategySidebar({
             <span className="text-xs font-semibold text-slate-100">
               趋势过滤 · Trend Regime
             </span>
+            <GlossaryTooltip termId="trend-regime" onNavigateToGuide={onNavigateToGuide} />
             <span className="rounded bg-purple-500/15 px-1.5 py-0.5 font-mono text-[10px] text-purple-300">
               {enabledRegimeCount}/{regimeStrategies.length}
             </span>
@@ -451,6 +455,7 @@ export function StrategySidebar({
             <span className="text-xs font-semibold text-slate-100">
               买点触发 · Entry Trigger
             </span>
+            <GlossaryTooltip termId="entry-trigger" onNavigateToGuide={onNavigateToGuide} />
             <span className="rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] text-amber-300">
               {enabledEntryCount}/{entryStrategies.length}
             </span>
@@ -530,7 +535,10 @@ export function StrategySidebar({
           }`}
         >
           <div>
-            <div className="text-xs font-medium text-slate-100">过滤高位偏热</div>
+            <div className="flex items-center gap-1 text-xs font-medium text-slate-100">
+              <span>过滤高位偏热</span>
+              <GlossaryTooltip termId="anti-chase" onNavigateToGuide={onNavigateToGuide} />
+            </div>
             <div className="text-[10px] text-slate-400">
               从今日可买中隐藏「高位偏热」标的，主线观察池不受影响
             </div>
@@ -594,7 +602,10 @@ export function StrategySidebar({
         </div>
 
         <label className="flex items-center justify-between text-xs">
-          <span className="text-slate-300">按跟踪指数智能聚合去重</span>
+          <span className="inline-flex items-center gap-1 text-slate-300">
+            按跟踪指数智能聚合去重
+            <GlossaryTooltip termId="index-group" onNavigateToGuide={onNavigateToGuide} />
+          </span>
           <input
             type="checkbox"
             checked={config.group_by_index}
