@@ -8,10 +8,29 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from chancedetect.api.schemas import PresetCreateRequest, ReplayRequest, SyncTriggerRequest
+from chancedetect.api.schemas import (
+    PositionCreateRequest,
+    PositionUpdateRequest,
+    PresetCreateRequest,
+    ReplayRequest,
+    SyncNavRequest,
+    SyncTriggerRequest,
+    TradeLotCreateRequest,
+    TradeLotUpdateRequest,
+)
 from chancedetect.data.sync_service import SyncService
+from chancedetect.positions.service import (
+    InvalidPositionInputError,
+    PositionNotFoundError,
+    PositionService,
+    TradeLotNotFoundError,
+)
 from chancedetect.storage.bar_store import BarStore
-from chancedetect.storage.sqlite_store import SQLiteStore
+from chancedetect.storage.sqlite_store import (
+    _UNSET,
+    ActivePositionExistsError,
+    SQLiteStore,
+)
 from chancedetect.strategies.engine import ScanRequestConfig, StrategyEngine
 from chancedetect.strategies.guide_metadata import build_guide_metadata
 from chancedetect.strategies.replay import build_fund_replay
@@ -23,6 +42,10 @@ router = APIRouter(prefix="/api/v1", tags=["chancedetect"])
 def _deps(request: Request) -> tuple[SQLiteStore, BarStore, SyncService, StrategyEngine]:
     st = request.app.state
     return st.sqlite_store, st.bar_store, st.sync_service, st.strategy_engine
+
+
+def _pos_svc(request: Request) -> PositionService:
+    return request.app.state.position_service
 
 
 @router.get("/health")
@@ -161,3 +184,177 @@ def trigger_sync(request: Request, body: SyncTriggerRequest) -> dict[str, Any]:
     t = threading.Thread(target=_worker, name=f"sync-{body.mode}", daemon=True)
     t.start()
     return {"accepted": True, "mode": body.mode}
+
+
+# ------------------------------------------------------------------
+# Tracked Positions, Trade Lots, Pending NAV Sync & OTC Lookup
+# ------------------------------------------------------------------
+
+
+@router.get("/otc/lookup")
+def lookup_otc(
+    request: Request,
+    q: str = Query(default=""),
+    limit: int = Query(default=25, ge=1, le=100),
+) -> dict[str, Any]:
+    return _pos_svc(request).lookup_otc(q, limit=limit)
+
+
+@router.get("/positions")
+def list_positions(
+    request: Request,
+    status: str = Query(default="active"),
+) -> dict[str, Any]:
+    try:
+        return _pos_svc(request).list_positions(status=status)
+    except InvalidPositionInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/positions/sync-nav")
+def sync_positions_nav(
+    request: Request,
+    body: SyncNavRequest | None = None,
+) -> dict[str, Any]:
+    req = body or SyncNavRequest()
+    try:
+        return _pos_svc(request).sync_tracked_otc_navs(otc_code=req.otc_code)
+    except InvalidPositionInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/positions", status_code=201)
+def create_position(request: Request, body: PositionCreateRequest) -> dict[str, Any]:
+    exchange_symbol: Any = (
+        body.exchange_symbol if "exchange_symbol" in body.model_fields_set else _UNSET
+    )
+    try:
+        pos = _pos_svc(request).create_position(
+            otc_code=body.otc_code,
+            otc_name=body.otc_name,
+            exchange_symbol=exchange_symbol,
+            trade_date=body.trade_date,
+            nav=body.nav,
+            amount=body.amount,
+            shares=body.shares,
+            fee=body.fee,
+            notes=body.notes,
+            lot_notes=body.lot_notes,
+            entry_signal_snapshot=body.entry_signal_snapshot,
+            custom_stop_loss_pct=body.custom_stop_loss_pct,
+            custom_trailing_drawdown_pct=body.custom_trailing_drawdown_pct,
+            custom_take_profit_pct=body.custom_take_profit_pct,
+        )
+    except ActivePositionExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidPositionInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"position": pos}
+
+
+@router.get("/positions/{position_id}")
+def get_position(request: Request, position_id: int) -> dict[str, Any]:
+    pos = _pos_svc(request).get_position(position_id)
+    if pos is None:
+        raise HTTPException(status_code=404, detail="Tracked Position not found")
+    return {"position": pos}
+
+
+@router.patch("/positions/{position_id}")
+def update_position(
+    request: Request, position_id: int, body: PositionUpdateRequest
+) -> dict[str, Any]:
+    fields = body.model_fields_set
+    try:
+        pos = _pos_svc(request).update_position(
+            position_id,
+            otc_name=body.otc_name if "otc_name" in fields else _UNSET,
+            exchange_symbol=body.exchange_symbol if "exchange_symbol" in fields else _UNSET,
+            notes=body.notes if "notes" in fields else _UNSET,
+            custom_stop_loss_pct=(
+                body.custom_stop_loss_pct if "custom_stop_loss_pct" in fields else _UNSET
+            ),
+            custom_trailing_drawdown_pct=(
+                body.custom_trailing_drawdown_pct
+                if "custom_trailing_drawdown_pct" in fields
+                else _UNSET
+            ),
+            custom_take_profit_pct=(
+                body.custom_take_profit_pct if "custom_take_profit_pct" in fields else _UNSET
+            ),
+        )
+    except PositionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ActivePositionExistsError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidPositionInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"position": pos}
+
+
+@router.delete("/positions/{position_id}")
+def delete_position(request: Request, position_id: int) -> dict[str, Any]:
+    deleted = _pos_svc(request).delete_position(position_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Tracked Position not found")
+    return {"deleted": True, "id": position_id}
+
+
+@router.post("/positions/{position_id}/lots", status_code=201)
+def add_trade_lot(
+    request: Request, position_id: int, body: TradeLotCreateRequest
+) -> dict[str, Any]:
+    try:
+        lot, pos = _pos_svc(request).add_trade_lot(
+            position_id,
+            side=body.side,
+            trade_date=body.trade_date,
+            nav=body.nav,
+            amount=body.amount,
+            shares=body.shares,
+            sell_ratio=body.sell_ratio,
+            fee=body.fee,
+            notes=body.notes,
+        )
+    except PositionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidPositionInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"lot": lot, "position": pos}
+
+
+@router.patch("/positions/{position_id}/lots/{lot_id}")
+def update_trade_lot(
+    request: Request,
+    position_id: int,
+    lot_id: int,
+    body: TradeLotUpdateRequest,
+) -> dict[str, Any]:
+    fields = body.model_fields_set
+    try:
+        lot, pos = _pos_svc(request).update_trade_lot(
+            position_id,
+            lot_id,
+            side=body.side if "side" in fields else _UNSET,
+            trade_date=body.trade_date if "trade_date" in fields else _UNSET,
+            nav=body.nav if "nav" in fields else _UNSET,
+            amount=body.amount if "amount" in fields else _UNSET,
+            shares=body.shares if "shares" in fields else _UNSET,
+            sell_ratio=body.sell_ratio if "sell_ratio" in fields else _UNSET,
+            fee=body.fee if "fee" in fields else _UNSET,
+            notes=body.notes if "notes" in fields else _UNSET,
+        )
+    except (PositionNotFoundError, TradeLotNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except InvalidPositionInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"lot": lot, "position": pos}
+
+
+@router.delete("/positions/{position_id}/lots/{lot_id}")
+def delete_trade_lot(request: Request, position_id: int, lot_id: int) -> dict[str, Any]:
+    try:
+        pos = _pos_svc(request).delete_trade_lot(position_id, lot_id)
+    except (PositionNotFoundError, TradeLotNotFoundError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"deleted": True, "id": lot_id, "position": pos}
