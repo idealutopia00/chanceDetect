@@ -253,8 +253,12 @@ def create_position(request: Request, body: PositionCreateRequest) -> dict[str, 
 
 
 @router.get("/positions/{position_id}")
-def get_position(request: Request, position_id: int) -> dict[str, Any]:
-    pos = _pos_svc(request).get_position(position_id)
+def get_position(
+    request: Request,
+    position_id: int,
+    post_exit_days: int = Query(default=40, ge=0, le=120),
+) -> dict[str, Any]:
+    pos = _pos_svc(request).get_position(position_id, post_exit_days=post_exit_days)
     if pos is None:
         raise HTTPException(status_code=404, detail="Tracked Position not found")
     return {"position": pos}

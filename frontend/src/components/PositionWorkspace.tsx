@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  AlertTriangle,
   ArrowDownRight,
   Briefcase,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Edit3,
   LineChart,
@@ -29,6 +32,7 @@ import type {
   TradeLotRecord,
 } from '../types'
 import { GlossaryTooltip } from './GlossaryTooltip'
+import { PositionDetailPanel } from './PositionDetailPanel'
 
 interface PositionWorkspaceProps {
   refreshKey: number
@@ -45,6 +49,9 @@ const EMPTY_SUMMARY: PositionsSummary = {
   active_count: 0,
   closed_count: 0,
   pending_nav_count: 0,
+  exit_alert_count: 0,
+  exit_warning_count: 0,
+  exit_alert_position_count: 0,
   closed_win_count: 0,
   closed_evaluated_count: 0,
   closed_win_rate_pct: null,
@@ -141,6 +148,8 @@ export function PositionWorkspace({
 
   const [lotEdit, setLotEdit] = useState<LotEditState | null>(null)
   const [savingLot, setSavingLot] = useState(false)
+  const [expandedDetailId, setExpandedDetailId] = useState<number | null>(null)
+  const [detailRefreshTick, setDetailRefreshTick] = useState(0)
 
   const loadPositions = useCallback(async () => {
     setLoading(true)
@@ -151,6 +160,7 @@ export function PositionWorkspace({
       setPositions(res.positions)
       setSummary(nextSummary)
       onSummaryChange?.(nextSummary)
+      setDetailRefreshTick((t) => t + 1)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -274,17 +284,26 @@ export function PositionWorkspace({
             summary.amount_position_count > 0 ? 'lg:grid-cols-5' : 'lg:grid-cols-3'
           }`}
         >
-          {/* Active & Pending NAV */}
+          {/* Active, Exit Alerts & Pending NAV */}
           <div className="rounded-lg border border-slate-800/90 bg-slate-950/60 px-3.5 py-2.5">
             <div className="flex items-center justify-between text-[11px] text-slate-400">
-              <span>活跃持仓 / 待确认净值</span>
-              <GlossaryTooltip termId="pending-nav" onNavigateToGuide={onNavigateToGuide} />
+              <span>活跃持仓 / 预警 / 待确认</span>
+              <div className="flex items-center gap-1">
+                <GlossaryTooltip termId="exit-signals" onNavigateToGuide={onNavigateToGuide} />
+                <GlossaryTooltip termId="pending-nav" onNavigateToGuide={onNavigateToGuide} />
+              </div>
             </div>
-            <div className="mt-1 flex items-baseline gap-2">
+            <div className="mt-1 flex flex-wrap items-baseline gap-2">
               <span className="font-mono text-lg font-bold text-slate-100">
                 {summary.active_count}
               </span>
               <span className="text-[11px] text-slate-400">只持仓中</span>
+              {(summary.exit_alert_count ?? 0) > 0 && (
+                <span className="inline-flex items-center gap-1 rounded bg-rose-500/20 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-rose-200">
+                  <AlertTriangle className="h-2.5 w-2.5 text-rose-400" />
+                  {summary.exit_alert_count} 预警
+                </span>
+              )}
               {summary.pending_nav_count > 0 && (
                 <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-300">
                   <Clock className="h-2.5 w-2.5" />
@@ -550,6 +569,23 @@ export function PositionWorkspace({
                           />
                         </span>
                       )}
+                      {pos.status === 'active' &&
+                        (pos.exit_signals ?? [])
+                          .filter((s) => s.triggered && s.rule_id !== 'short_term_fee_guard')
+                          .map((sig) => (
+                            <span
+                              key={sig.rule_id}
+                              title={sig.message}
+                              className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+                                sig.severity === 'alert'
+                                  ? 'border-rose-500/55 bg-rose-500/20 text-rose-200'
+                                  : 'border-amber-500/45 bg-amber-500/15 text-amber-200'
+                              }`}
+                            >
+                              <AlertTriangle className="h-2.5 w-2.5" />
+                              {sig.title}
+                            </span>
+                          ))}
                     </div>
 
                     {/* Lifecycle Date Span, Latest NAV & Proxy */}
@@ -867,7 +903,26 @@ export function PositionWorkspace({
                   </div>
 
                   {/* Position Action Buttons */}
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex shrink-0 flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedDetailId((cur) => (cur === pos.id ? null : pos.id))
+                      }
+                      className={`inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
+                        expandedDetailId === pos.id
+                          ? 'border-sky-400/60 bg-sky-500/20 text-sky-200'
+                          : 'border-slate-700 bg-slate-950 text-slate-200 hover:border-sky-500/50 hover:text-sky-200'
+                      }`}
+                    >
+                      <LineChart className="h-3.5 w-3.5 text-sky-400" />
+                      双曲线与风控
+                      {expandedDetailId === pos.id ? (
+                        <ChevronUp className="h-3.5 w-3.5" />
+                      ) : (
+                        <ChevronDown className="h-3.5 w-3.5" />
+                      )}
+                    </button>
                     {pos.status === 'active' ? (
                       <>
                         <button
@@ -907,6 +962,16 @@ export function PositionWorkspace({
                     </button>
                   </div>
                 </div>
+
+                {/* Expandable Dual-Curve Review Chart, Proxy K-Line & Exit Signals Panel */}
+                {expandedDetailId === pos.id && (
+                  <PositionDetailPanel
+                    positionId={pos.id}
+                    refreshKey={refreshKey + detailRefreshTick}
+                    onPositionUpdated={loadPositions}
+                    onNavigateToGuide={onNavigateToGuide}
+                  />
+                )}
 
                 {/* Trade Lots Table */}
                 <div className="overflow-x-auto bg-slate-950/40">

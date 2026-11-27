@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from chancedetect.strategies.engine import ScanRequestConfig
 
@@ -39,18 +39,36 @@ class PositionCreateRequest(BaseModel):
     notes: str = Field(default="", max_length=2000)
     lot_notes: str = Field(default="", max_length=1000)
     entry_signal_snapshot: dict[str, Any] = Field(default_factory=dict)
-    custom_stop_loss_pct: float | None = Field(default=None, ge=-99.0, le=0.0)
-    custom_trailing_drawdown_pct: float | None = Field(default=None, ge=-99.0, le=0.0)
+    custom_stop_loss_pct: float | None = Field(default=None, ge=-99.0, le=99.0)
+    custom_trailing_drawdown_pct: float | None = Field(default=None, ge=-99.0, le=99.0)
     custom_take_profit_pct: float | None = Field(default=None, gt=0.0, le=1000.0)
+
+    @field_validator("custom_stop_loss_pct", "custom_trailing_drawdown_pct")
+    @classmethod
+    def _normalize_negative_threshold(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        if v == 0:
+            raise ValueError("Threshold magnitude must be non-zero")
+        return -abs(float(v))
 
 
 class PositionUpdateRequest(BaseModel):
     otc_name: str | None = Field(default=None, max_length=120)
     exchange_symbol: str | None = Field(default=None, max_length=20)
     notes: str | None = Field(default=None, max_length=2000)
-    custom_stop_loss_pct: float | None = Field(default=None, ge=-99.0, le=0.0)
-    custom_trailing_drawdown_pct: float | None = Field(default=None, ge=-99.0, le=0.0)
+    custom_stop_loss_pct: float | None = Field(default=None, ge=-99.0, le=99.0)
+    custom_trailing_drawdown_pct: float | None = Field(default=None, ge=-99.0, le=99.0)
     custom_take_profit_pct: float | None = Field(default=None, gt=0.0, le=1000.0)
+
+    @field_validator("custom_stop_loss_pct", "custom_trailing_drawdown_pct")
+    @classmethod
+    def _normalize_negative_threshold(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        if v == 0:
+            raise ValueError("Threshold magnitude must be non-zero")
+        return -abs(float(v))
 
 
 class TradeLotCreateRequest(BaseModel):

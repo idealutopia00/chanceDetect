@@ -98,6 +98,7 @@ export default function App() {
 
   // Position tracking modal & header badge state
   const [pendingNavCount, setPendingNavCount] = useState(0)
+  const [exitAlertCount, setExitAlertCount] = useState(0)
   const [positionsRefreshKey, setPositionsRefreshKey] = useState(0)
   const [buyModalOpen, setBuyModalOpen] = useState(false)
   const [buyPrefill, setBuyPrefill] = useState<BuyModalPrefill | null>(null)
@@ -118,7 +119,9 @@ export default function App() {
   const refreshPositionBadge = useCallback(async () => {
     try {
       const res = await api.listPositions('active')
-      setPendingNavCount(res.summary.pending_nav_count)
+      const sum = res.portfolio_summary ?? res.summary
+      setPendingNavCount(sum.pending_nav_count)
+      setExitAlertCount(sum.exit_alert_count ?? 0)
     } catch {
       // ignore initial position count fetch errors
     }
@@ -151,7 +154,9 @@ export default function App() {
       setStrategies(sRes.strategies)
       setPresets(pRes.presets)
       if (posRes) {
-        setPendingNavCount(posRes.summary.pending_nav_count)
+        const sum = posRes.portfolio_summary ?? posRes.summary
+        setPendingNavCount(sum.pending_nav_count)
+        setExitAlertCount(sum.exit_alert_count ?? 0)
       }
       const initialCfg = buildDefaultConfig(sRes.strategies)
       setConfig(initialCfg)
@@ -258,6 +263,7 @@ export default function App() {
         onTabChange={setActiveTab}
         health={health}
         pendingNavCount={pendingNavCount}
+        exitAlertCount={exitAlertCount}
       />
 
       {positionToast && (
@@ -319,7 +325,10 @@ export default function App() {
             onOpenReentryBuy={openReentryBuyModal}
             onSelectFund={setSelectedSymbol}
             onNavigateToGuide={handleNavigateToGuide}
-            onSummaryChange={(s) => setPendingNavCount(s.pending_nav_count)}
+            onSummaryChange={(s) => {
+              setPendingNavCount(s.pending_nav_count)
+              setExitAlertCount(s.exit_alert_count ?? 0)
+            }}
           />
         )}
 

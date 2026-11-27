@@ -29,6 +29,10 @@ from chancedetect.positions.accounting import (
     evaluate_position_accounting,
     sort_trade_lots,
 )
+from chancedetect.positions.analytics import (
+    build_position_review_analytics,
+    extract_proxy_bars_by_symbol,
+)
 from chancedetect.storage.bar_store import BarStore
 from chancedetect.storage.sqlite_store import (
     _UNSET,
@@ -340,11 +344,15 @@ class PositionService:
             "portfolio_summary": portfolio_summary,
         }
 
-    def get_position(self, position_id: int) -> dict[str, Any] | None:
+    def get_position(
+        self, position_id: int, *, post_exit_days: int = 40
+    ) -> dict[str, Any] | None:
         pos = self.sqlite.get_position(position_id)
         if pos is None:
             return None
-        return self._serialize_positions([pos])[0]
+        return self._serialize_positions(
+            [pos], include_series=True, post_exit_days=post_exit_days
+        )[0]
 
     def update_position(
         self,
@@ -780,53 +788,74 @@ class PositionService:
         if updates:
             self.sqlite.update_position(position_id, **updates)
 
-    def _load_latest_proxy_bars(
+    def _load_proxy_series(
         self, symbols: list[str]
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[str, list[dict[str, Any]]]:
         unique_syms = sorted({s for s in symbols if s})
-        if not unique_syms or not self.bars.has_daily_bars():
+        if not unique_syms:
             return {}
-        df = self.bars.load_daily_bars(symbols=unique_syms)
-        if df.is_empty():
-            return {}
-        latest_by_sym: dict[str, dict[str, Any]] = {}
-        for row in df.group_by("symbol").tail(1).iter_rows(named=True):
-            sym = str(row["symbol"])
-            dt = row["trade_date"]
-            latest_by_sym[sym] = {
-                "trade_date": dt.isoformat() if isinstance(dt, date) else str(dt),
-                "close": float(row["close"]),
-                "pct_chg": float(row["pct_chg"]) if row["pct_chg"] is not None else 0.0,
-            }
-        return latest_by_sym
+        features_df = (
+            self.bars.load_features(symbols=unique_syms)
+            if self.bars.has_features()
+            else None
+        )
+        bars_df = (
+            self.bars.load_daily_bars(symbols=unique_syms)
+            if (features_df is None or features_df.is_empty()) and self.bars.has_daily_bars()
+            else None
+        )
+        if features_df is not None and not features_df.is_empty():
+            return extract_proxy_bars_by_symbol(features_df, features_df=features_df)
+        if bars_df is not None and not bars_df.is_empty():
+            return extract_proxy_bars_by_symbol(bars_df, features_df=None)
+        return {}
 
     def _serialize_positions(
-        self, positions: list[TrackedPositionRecord]
+        self,
+        positions: list[TrackedPositionRecord],
+        *,
+        include_series: bool = False,
+        post_exit_days: int = 40,
     ) -> list[dict[str, Any]]:
         if not positions:
             return []
         pos_ids = [p.id for p in positions]
         lots_by_pos = self.sqlite.list_trade_lots_for_positions(pos_ids)
-        latest_nav_by_code = self.sqlite.get_latest_otc_nav_bars(
-            sorted({p.otc_code for p in positions})
-        )
+        unique_otc_codes = sorted({p.otc_code for p in positions})
+        nav_bars_by_code: dict[str, list[OTCNavBar]] = {
+            code: self.sqlite.list_otc_nav_bars(code) for code in unique_otc_codes
+        }
+        latest_nav_by_code: dict[str, OTCNavBar] = {
+            code: bars[-1] for code, bars in nav_bars_by_code.items() if bars
+        }
         proxy_symbols = [p.exchange_symbol for p in positions if p.exchange_symbol]
-        latest_proxy_by_sym = self._load_latest_proxy_bars(proxy_symbols)
+        proxy_series_by_sym = self._load_proxy_series(proxy_symbols)
         eval_date = self._today_fn()
 
         serialized: list[dict[str, Any]] = []
         for pos in positions:
             raw_lots = lots_by_pos.get(pos.id, [])
             lots = sort_trade_lots(raw_lots)
+            otc_bars = nav_bars_by_code.get(pos.otc_code, [])
             latest_bar: OTCNavBar | None = latest_nav_by_code.get(pos.otc_code)
             proxy_fund = (
                 self.sqlite.get_exchange_fund(pos.exchange_symbol)
                 if pos.exchange_symbol
                 else None
             )
-            proxy_bar = (
-                latest_proxy_by_sym.get(pos.exchange_symbol)
+            proxy_rows = (
+                proxy_series_by_sym.get(pos.exchange_symbol, [])
                 if pos.exchange_symbol
+                else []
+            )
+            latest_proxy_row = proxy_rows[-1] if proxy_rows else None
+            proxy_bar = (
+                {
+                    "trade_date": latest_proxy_row["time"],
+                    "close": latest_proxy_row["close"],
+                    "pct_chg": latest_proxy_row["pct_chg"],
+                }
+                if latest_proxy_row
                 else None
             )
             pending_count = sum(1 for lot in lots if lot.nav_status == "pending")
@@ -835,6 +864,15 @@ class PositionService:
                 latest_nav=latest_bar.unit_nav if latest_bar else None,
                 eval_date=eval_date,
                 fallback_opened_date=pos.opened_date,
+            )
+            analytics = build_position_review_analytics(
+                pos,
+                lots,
+                acct,
+                otc_bars,
+                proxy_rows,
+                post_exit_days=post_exit_days,
+                include_series=include_series,
             )
 
             serialized_lots = [
@@ -847,64 +885,79 @@ class PositionService:
                 for lot in lots
             ]
 
-            serialized.append(
-                {
-                    "id": pos.id,
-                    "otc_code": pos.otc_code,
-                    "otc_name": pos.otc_name,
-                    "exchange_symbol": pos.exchange_symbol,
-                    "proxy_fund": (
-                        {
-                            "symbol": proxy_fund.symbol,
-                            "code": proxy_fund.code,
-                            "name": proxy_fund.name,
-                            "fund_type": proxy_fund.fund_type,
-                            "index_code": proxy_fund.index_code,
-                            "index_name": proxy_fund.index_name,
-                        }
-                        if proxy_fund
-                        else None
-                    ),
-                    "status": pos.status,
-                    "opened_date": pos.opened_date,
-                    "closed_date": pos.closed_date,
-                    "holding_days": acct.holding_days,
-                    "entry_signal_snapshot": pos.entry_signal_snapshot,
-                    "notes": pos.notes,
-                    "custom_stop_loss_pct": pos.custom_stop_loss_pct,
-                    "custom_trailing_drawdown_pct": pos.custom_trailing_drawdown_pct,
-                    "custom_take_profit_pct": pos.custom_take_profit_pct,
-                    "latest_nav": latest_bar.unit_nav if latest_bar else None,
-                    "latest_nav_date": latest_bar.nav_date if latest_bar else None,
-                    "latest_daily_return_pct": (
-                        latest_bar.daily_return_pct if latest_bar else None
-                    ),
-                    "latest_proxy_close": proxy_bar["close"] if proxy_bar else None,
-                    "latest_proxy_pct_chg": proxy_bar["pct_chg"] if proxy_bar else None,
-                    "latest_proxy_date": proxy_bar["trade_date"] if proxy_bar else None,
-                    "has_amount_data": acct.has_amount_data,
-                    "avg_cost_nav": acct.avg_cost_nav,
-                    "remaining_shares": acct.remaining_shares,
-                    "remaining_ratio": acct.remaining_ratio,
-                    "invested_capital": acct.invested_capital,
-                    "total_bought_amount": acct.total_bought_amount,
-                    "total_sold_amount": acct.total_sold_amount,
-                    "total_fees": acct.total_fees,
-                    "realized_pnl": acct.realized_pnl,
-                    "realized_return_pct": acct.realized_return_pct,
-                    "unrealized_pnl": acct.unrealized_pnl,
-                    "unrealized_return_pct": acct.unrealized_return_pct,
-                    "total_pnl": acct.total_pnl,
-                    "total_return_pct": acct.total_return_pct,
-                    "fifo_fee_status": acct.fifo_fee_status.to_dict(),
-                    "lot_count": len(lots),
-                    "pending_lot_count": pending_count,
-                    "has_pending_nav": pending_count > 0,
-                    "lots": serialized_lots,
-                    "created_at": pos.created_at,
-                    "updated_at": pos.updated_at,
-                }
-            )
+            item: dict[str, Any] = {
+                "id": pos.id,
+                "otc_code": pos.otc_code,
+                "otc_name": pos.otc_name,
+                "exchange_symbol": pos.exchange_symbol,
+                "proxy_fund": (
+                    {
+                        "symbol": proxy_fund.symbol,
+                        "code": proxy_fund.code,
+                        "name": proxy_fund.name,
+                        "fund_type": proxy_fund.fund_type,
+                        "index_code": proxy_fund.index_code,
+                        "index_name": proxy_fund.index_name,
+                    }
+                    if proxy_fund
+                    else None
+                ),
+                "status": pos.status,
+                "opened_date": pos.opened_date,
+                "closed_date": pos.closed_date,
+                "holding_days": acct.holding_days,
+                "entry_signal_snapshot": pos.entry_signal_snapshot,
+                "notes": pos.notes,
+                "custom_stop_loss_pct": pos.custom_stop_loss_pct,
+                "custom_trailing_drawdown_pct": pos.custom_trailing_drawdown_pct,
+                "custom_take_profit_pct": pos.custom_take_profit_pct,
+                "latest_nav": latest_bar.unit_nav if latest_bar else None,
+                "latest_nav_date": latest_bar.nav_date if latest_bar else None,
+                "latest_daily_return_pct": (
+                    latest_bar.daily_return_pct if latest_bar else None
+                ),
+                "latest_proxy_close": proxy_bar["close"] if proxy_bar else None,
+                "latest_proxy_pct_chg": proxy_bar["pct_chg"] if proxy_bar else None,
+                "latest_proxy_date": proxy_bar["trade_date"] if proxy_bar else None,
+                "latest_proxy_trend_stage": (
+                    latest_proxy_row.get("trend_stage") if latest_proxy_row else None
+                ),
+                "has_amount_data": acct.has_amount_data,
+                "avg_cost_nav": acct.avg_cost_nav,
+                "remaining_shares": acct.remaining_shares,
+                "remaining_ratio": acct.remaining_ratio,
+                "invested_capital": acct.invested_capital,
+                "total_bought_amount": acct.total_bought_amount,
+                "total_sold_amount": acct.total_sold_amount,
+                "total_fees": acct.total_fees,
+                "realized_pnl": acct.realized_pnl,
+                "realized_return_pct": acct.realized_return_pct,
+                "unrealized_pnl": acct.unrealized_pnl,
+                "unrealized_return_pct": acct.unrealized_return_pct,
+                "total_pnl": acct.total_pnl,
+                "total_return_pct": acct.total_return_pct,
+                "fifo_fee_status": acct.fifo_fee_status.to_dict(),
+                "peak_return_pct": analytics["peak_return_pct"],
+                "peak_date": analytics["peak_date"],
+                "current_drawdown_pct": analytics["current_drawdown_pct"],
+                "max_holding_drawdown_pct": analytics["max_holding_drawdown_pct"],
+                "latest_tracking_spread_pct": analytics["latest_tracking_spread_pct"],
+                "exit_signals": analytics["exit_signals"],
+                "exit_alert_count": analytics["exit_alert_count"],
+                "exit_warning_count": analytics["exit_warning_count"],
+                "triggered_exit_signal_count": analytics["triggered_exit_signal_count"],
+                "post_exit_stats": analytics["post_exit_stats"],
+                "lot_count": len(lots),
+                "pending_lot_count": pending_count,
+                "has_pending_nav": pending_count > 0,
+                "lots": serialized_lots,
+                "created_at": pos.created_at,
+                "updated_at": pos.updated_at,
+            }
+            if include_series:
+                item["dual_curve"] = analytics["dual_curve"]
+                item["proxy_bars"] = analytics["proxy_bars"]
+            serialized.append(item)
         return serialized
 
     @staticmethod

@@ -93,8 +93,10 @@ export const api = {
   listPositions: (status: 'active' | 'closed' | 'all' = 'active') =>
     request<PositionsListResponse>(`/positions?status=${encodeURIComponent(status)}`),
 
-  getPosition: (positionId: number) =>
-    request<{ position: TrackedPositionRecord }>(`/positions/${positionId}`),
+  getPosition: (positionId: number, postExitDays = 40) =>
+    request<{ position: TrackedPositionRecord }>(
+      `/positions/${positionId}?post_exit_days=${encodeURIComponent(String(postExitDays))}`,
+    ),
 
   createPosition: (payload: PositionCreatePayload) =>
     request<{ position: TrackedPositionRecord }>('/positions', {

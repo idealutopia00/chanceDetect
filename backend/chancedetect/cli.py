@@ -283,6 +283,94 @@ def scan(
         console.print(watch_table)
 
 
+@app.command("positions")
+def positions_cmd(
+    show_all: Annotated[
+        bool,
+        typer.Option("--all", "-a", help="Include archived (closed) Tracked Positions"),
+    ] = False,
+) -> None:
+    """Display Tracked Positions with return %, 7-day FIFO fee status, and triggered Exit Signals."""
+    pos_svc = _init_position_service()
+    res = pos_svc.list_positions(status="all" if show_all else "active")
+    summary = res["portfolio_summary"]
+    items = res["positions"]
+
+    console.print(
+        f"[bold cyan]Tracked Positions:[/bold cyan] "
+        f"Active [bold]{summary['active_count']}[/bold]  "
+        f"Closed [bold]{summary['closed_count']}[/bold]  "
+        f"Exit Alerts [bold red]{summary.get('exit_alert_count', 0)}[/bold red] "
+        f"({summary.get('exit_alert_position_count', 0)} pos)  "
+        f"Pending NAV [bold yellow]{summary['pending_nav_count']}[/bold yellow]"
+    )
+
+    if not items:
+        console.print("[dim]No tracked positions found.[/dim]")
+        return
+
+    table = Table(title="Tracked Positions & Exit Signals")
+    table.add_column("ID", justify="right", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Code", no_wrap=True)
+    table.add_column("Name", overflow="ellipsis", max_width=14)
+    table.add_column("Proxy", no_wrap=True)
+    table.add_column("Opened", no_wrap=True)
+    table.add_column("Ret%", justify="right", no_wrap=True)
+    table.add_column("7d Fee", no_wrap=True)
+    table.add_column("Exit Signals")
+
+    for pos in items:
+        status_cell = (
+            "[green]ACTIVE[/green]" if pos["status"] == "active" else "[dim]CLOSED[/dim]"
+        )
+        opened = pos["opened_date"]
+        ret = pos.get("total_return_pct")
+        if ret is None:
+            ret_cell = "[dim]Pending[/dim]"
+        elif ret > 0:
+            ret_cell = f"[red]{ret:+.2f}%[/red]"
+        elif ret < 0:
+            ret_cell = f"[green]{ret:+.2f}%[/green]"
+        else:
+            ret_cell = f"{ret:+.2f}%"
+
+        fifo = pos.get("fifo_fee_status") or {}
+        if pos["status"] == "closed":
+            fee_cell = "[dim]-[/dim]"
+        elif fifo.get("all_fee_free"):
+            fee_cell = "[green]免1.5%[/green]"
+        else:
+            free_pct = round(float(fifo.get("fee_free_ratio", 0.0)) * 100.0)
+            days_left = fifo.get("days_until_all_fee_free", 0)
+            fee_cell = f"[yellow]{free_pct}%({days_left}d)[/yellow]"
+
+        triggered = [s for s in pos.get("exit_signals", []) if s.get("triggered")]
+        if pos["status"] == "closed":
+            sig_cell = "[dim]Archived[/dim]"
+        elif not triggered:
+            sig_cell = "[green]OK[/green]"
+        else:
+            parts: list[str] = []
+            for s in triggered:
+                color = "red" if s["severity"] == "alert" else "yellow"
+                parts.append(f"[{color}]{s['title']}[/{color}]")
+            sig_cell = ", ".join(parts)
+
+        table.add_row(
+            str(pos["id"]),
+            status_cell,
+            pos["otc_code"],
+            pos["otc_name"][:12],
+            pos["exchange_symbol"] or "-",
+            opened,
+            ret_cell,
+            fee_cell,
+            sig_cell,
+        )
+    console.print(table)
+
+
 @app.command("serve")
 def serve(
     host: Annotated[str, typer.Option("--host")] = "127.0.0.1",

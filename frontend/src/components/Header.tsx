@@ -20,9 +20,16 @@ interface HeaderProps {
   onTabChange: (tab: AppTab) => void
   health: HealthResponse | null
   pendingNavCount?: number
+  exitAlertCount?: number
 }
 
-export function Header({ activeTab, onTabChange, health, pendingNavCount = 0 }: HeaderProps) {
+export function Header({
+  activeTab,
+  onTabChange,
+  health,
+  pendingNavCount = 0,
+  exitAlertCount = 0,
+}: HeaderProps) {
   const latestDate = health?.storage?.latest_trade_date || health?.universe?.latest_trade_date
   const totalFunds = health?.universe?.total_exchange_funds ?? 0
   const totalOtc = health?.universe?.unique_otc_funds ?? 0
@@ -62,6 +69,14 @@ export function Header({ activeTab, onTabChange, health, pendingNavCount = 0 }: 
                 >
                   <Icon className="h-3.5 w-3.5" />
                   <span>{tab.label}</span>
+                  {tab.id === 'positions' && exitAlertCount > 0 && (
+                    <span
+                      className="rounded-full border border-rose-400/60 bg-rose-500/25 px-1.5 py-0.2 font-mono text-[10px] font-semibold text-rose-200"
+                      title={`${exitAlertCount} 条离场预警（Exit Signals）`}
+                    >
+                      {exitAlertCount}
+                    </span>
+                  )}
                   {tab.id === 'positions' && pendingNavCount > 0 && (
                     <span
                       className="rounded-full border border-amber-400/50 bg-amber-500/20 px-1.5 py-0.2 font-mono text-[10px] font-semibold text-amber-200"

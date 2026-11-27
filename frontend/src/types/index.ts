@@ -436,6 +436,83 @@ export interface TradeLotRecord {
   updated_at: string
 }
 
+export type ExitSeverity = 'alert' | 'warning' | 'ok'
+
+export interface ExitSignalItem {
+  rule_id: string
+  title: string
+  severity: ExitSeverity
+  triggered: boolean
+  message: string
+  metric_value: number | null
+  threshold_value: number | null
+}
+
+export interface DualCurvePoint {
+  date: string
+  otc_return_pct: number | null
+  proxy_return_pct: number | null
+  spread_pct: number | null
+  otc_unit_nav: number | null
+  proxy_close: number | null
+  is_post_exit: boolean
+}
+
+export interface DualCurveMarker {
+  lot_id: number
+  date: string
+  side: TradeSide
+  kind: 'buy' | 'add' | 'partial_sell' | 'full_sell'
+  label: string
+  nav: number | null
+  nav_status: NavStatus
+  return_pct_on_date: number | null
+  amount: number | null
+  shares: number | null
+  sell_ratio: number | null
+  notes: string
+}
+
+export interface DualCurveData {
+  baseline_date: string
+  has_proxy_curve: boolean
+  is_pending_baseline: boolean
+  breakeven_return_pct: number | null
+  peak_return_pct: number | null
+  peak_date: string | null
+  current_drawdown_pct: number | null
+  max_holding_drawdown_pct: number | null
+  latest_tracking_spread_pct: number | null
+  post_exit_days: number
+  points: DualCurvePoint[]
+  markers: DualCurveMarker[]
+}
+
+export interface PostExitStats {
+  closed_date: string
+  days_observed: number
+  post_exit_latest_return_pct: number | null
+  post_exit_return_20d_pct: number | null
+  post_exit_return_40d_pct: number | null
+  post_exit_max_gain_pct: number | null
+  post_exit_max_drop_pct: number | null
+}
+
+export interface ProxyKlineBar {
+  time: string
+  open: number
+  high: number
+  low: number
+  close: number
+  volume: number
+  pct_chg: number
+  ma5: number | null
+  ma10: number | null
+  ma20: number | null
+  ma60: number | null
+  trend_stage: TrendStage | null
+}
+
 export interface TrackedPositionRecord {
   id: number
   otc_code: string
@@ -457,6 +534,7 @@ export interface TrackedPositionRecord {
   latest_proxy_close: number | null
   latest_proxy_pct_chg: number | null
   latest_proxy_date: string | null
+  latest_proxy_trend_stage?: TrendStage | null
   has_amount_data: boolean
   avg_cost_nav: number | null
   remaining_shares: number | null
@@ -472,6 +550,18 @@ export interface TrackedPositionRecord {
   total_pnl: number | null
   total_return_pct: number | null
   fifo_fee_status: FifoFeeStatus
+  peak_return_pct: number | null
+  peak_date: string | null
+  current_drawdown_pct: number | null
+  max_holding_drawdown_pct: number | null
+  latest_tracking_spread_pct: number | null
+  exit_signals: ExitSignalItem[]
+  exit_alert_count: number
+  exit_warning_count: number
+  triggered_exit_signal_count: number
+  post_exit_stats: PostExitStats | null
+  dual_curve?: DualCurveData
+  proxy_bars?: ProxyKlineBar[]
   lot_count: number
   pending_lot_count: number
   has_pending_nav: boolean
@@ -484,6 +574,9 @@ export interface PositionsSummary {
   active_count: number
   closed_count: number
   pending_nav_count: number
+  exit_alert_count: number
+  exit_warning_count: number
+  exit_alert_position_count: number
   closed_win_count: number
   closed_evaluated_count: number
   closed_win_rate_pct: number | null

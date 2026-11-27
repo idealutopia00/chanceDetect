@@ -814,6 +814,21 @@ def compute_portfolio_summary(
     closed_positions = [p for p in serialized_positions if p["status"] == "closed"]
     closed_count = len(closed_positions)
     pending_nav_count = sum(int(p.get("pending_lot_count") or 0) for p in serialized_positions)
+    exit_alert_count = sum(
+        int(p.get("exit_alert_count") or 0)
+        for p in serialized_positions
+        if p["status"] == "active"
+    )
+    exit_warning_count = sum(
+        int(p.get("exit_warning_count") or 0)
+        for p in serialized_positions
+        if p["status"] == "active"
+    )
+    exit_alert_position_count = sum(
+        1
+        for p in serialized_positions
+        if p["status"] == "active" and int(p.get("exit_alert_count") or 0) > 0
+    )
 
     closed_returns = [
         float(p["total_return_pct"])
@@ -877,6 +892,9 @@ def compute_portfolio_summary(
         "active_count": active_count,
         "closed_count": closed_count,
         "pending_nav_count": pending_nav_count,
+        "exit_alert_count": exit_alert_count,
+        "exit_warning_count": exit_warning_count,
+        "exit_alert_position_count": exit_alert_position_count,
         "closed_win_count": closed_win_count,
         "closed_evaluated_count": closed_evaluated_count,
         "closed_win_rate_pct": closed_win_rate_pct,
